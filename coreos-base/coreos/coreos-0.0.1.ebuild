@@ -92,6 +92,7 @@ RDEPEND="${RDEPEND}
 		app-emulation/rkt[actool]
 		app-emulation/xenserver-pv-version
 		app-emulation/xenstore
+		sec-policy/ikgt-base
 		sys-auth/realmd
 		sys-auth/sssd
 	)"

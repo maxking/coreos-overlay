@@ -31,7 +31,6 @@ RDEPEND="
 	net-misc/iputils
 	net-misc/openssh
 	net-misc/rsync
-	sec-policy/ikgt-base
 	sys-apps/coreutils
 	sys-apps/diffutils
 	sys-apps/file

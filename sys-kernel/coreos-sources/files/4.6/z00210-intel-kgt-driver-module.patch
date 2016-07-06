@@ -1,0 +1,3593 @@
+diff --git a/security/Kconfig b/security/Kconfig
+index 176758c..1eb14e5 100644
+--- a/security/Kconfig
++++ b/security/Kconfig
+@@ -124,6 +124,7 @@ source security/tomoyo/Kconfig
+ source security/apparmor/Kconfig
+ source security/loadpin/Kconfig
+ source security/yama/Kconfig
++source security/ikgt/Kconfig
+ 
+ source security/integrity/Kconfig
+ 
+@@ -133,6 +134,7 @@ choice
+ 	default DEFAULT_SECURITY_SMACK if SECURITY_SMACK
+ 	default DEFAULT_SECURITY_TOMOYO if SECURITY_TOMOYO
+ 	default DEFAULT_SECURITY_APPARMOR if SECURITY_APPARMOR
++	default DEFAULT_SECURITY_IKGT if SECURITY_IKGT
+ 	default DEFAULT_SECURITY_DAC
+ 
+ 	help
+@@ -154,6 +156,9 @@ choice
+ 	config DEFAULT_SECURITY_DAC
+ 		bool "Unix Discretionary Access Controls"
+ 
++	config DEFAULT_SECURITY_IKGT
++		bool "ikgt" if SECURITY_IKGT=y
++
+ endchoice
+ 
+ config DEFAULT_SECURITY
+@@ -163,6 +168,7 @@ config DEFAULT_SECURITY
+ 	default "tomoyo" if DEFAULT_SECURITY_TOMOYO
+ 	default "apparmor" if DEFAULT_SECURITY_APPARMOR
+ 	default "" if DEFAULT_SECURITY_DAC
++	default "ikgt" if DEFAULT_SECURITY_IKGT
+ 
+ endmenu
+ 
+diff --git a/security/ikgt/Kconfig b/security/ikgt/Kconfig
+new file mode 100644
+index 0000000..7857a32
+--- /dev/null
++++ b/security/ikgt/Kconfig
+@@ -0,0 +1,9 @@
++config SECURITY_IKGT
++	bool "Intel Kernel Guard Extensions Support."
++	depends on SECURITY
++	default m
++	help
++	  This enables Intel Kernel Guard Technology module.
++	  It requires the to have supported xmon module running. More
++	  details about this can be fount at https://01.org/intel-kgt
++
+diff --git a/security/ikgt/Makefile b/security/ikgt/Makefile
+new file mode 100755
+index 0000000..4d1764c
+--- /dev/null
++++ b/security/ikgt/Makefile
+@@ -0,0 +1,5 @@
++obj-m=ikgt_agent.o
++ikgt_agent-objs:=main.o ikgt_api.o em64t/ikgt_api.o \
++	configfs_setup.o cr0.o cr4.o msr.o log.o debug.o \
++	alloc.o
++
+diff --git a/security/ikgt/alloc.c b/security/ikgt/alloc.c
+new file mode 100755
+index 0000000..276fde4
+--- /dev/null
++++ b/security/ikgt/alloc.c
+@@ -0,0 +1,105 @@
++/*
++* This is an example ikgt usage driver.
++* Copyright (c) 2015, Intel Corporation.
++*
++* This program is free software; you can redistribute it and/or modify it
++* under the terms and conditions of the GNU General Public License,
++* version 2, as published by the Free Software Foundation.
++*
++* This program is distributed in the hope it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++* more details.
++*/
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/slab.h>
++
++#include <linux/kobject.h>
++#include <linux/pagemap.h>
++
++#include "common.h"
++#include "policy_common.h"
++#include "alloc.h"
++
++static char *g_in_base_addr;
++static uint64_t g_in_size;
++static atomic_t g_in_lock = ATOMIC_INIT(0);
++
++static char *g_out_base_addr;
++static uint64_t g_out_size;
++static atomic_t g_out_lock = ATOMIC_INIT(0);
++
++static char *g_log_base_addr;
++static uint64_t g_log_size;
++
++
++bool init_in_buf(char *in_buf, uint64_t size)
++{
++	g_in_base_addr = in_buf;
++	g_in_size = size;
++
++	return true;
++}
++
++bool init_out_buf(char *out_buf, uint64_t size)
++{
++	g_out_base_addr = out_buf;
++	g_out_size = size;
++
++	return true;
++}
++
++bool init_log_buf(char *log_buf, uint64_t size)
++{
++	g_log_base_addr = log_buf;
++	g_log_size = size;
++
++	return true;
++}
++
++char *get_alloc_info_log_addr(void)
++{
++	return g_log_base_addr;
++}
++
++char *allocate_in_buf(uint64_t size, uint64_t *offset)
++{
++	if (atomic_inc_return(&g_in_lock) > 1) {
++		/* Didn't get it */
++		atomic_dec(&g_in_lock);
++		return NULL;
++	}
++
++	/* Currently support only 1 buffer */
++	*offset = 0;
++
++	return g_in_base_addr;
++}
++
++void free_in_buf(uint64_t offset)
++{
++	atomic_dec(&g_in_lock);
++}
++
++char *allocate_out_buf(uint64_t size, uint64_t *offset)
++{
++	if (atomic_inc_return(&g_out_lock) > 1) {
++		/* Didn't get it */
++		atomic_dec(&g_out_lock);
++		return NULL;
++	}
++
++	/* Currently support only 1 buffer */
++	*offset = 0;
++
++	return g_out_base_addr;
++}
++
++void free_out_buf(uint64_t offset)
++{
++	atomic_dec(&g_out_lock);
++}
++
++
+diff --git a/security/ikgt/alloc.h b/security/ikgt/alloc.h
+new file mode 100755
+index 0000000..a613e76
+--- /dev/null
++++ b/security/ikgt/alloc.h
+@@ -0,0 +1,38 @@
++/*
++* This is an example ikgt usage driver.
++* Copyright (c) 2015, Intel Corporation.
++*
++* This program is free software; you can redistribute it and/or modify it
++* under the terms and conditions of the GNU General Public License,
++* version 2, as published by the Free Software Foundation.
++*
++* This program is distributed in the hope it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++* more details.
++*/
++
++#ifndef _ALLOC_H
++#define _ALLOC_H
++
++#include "policy_common.h"
++
++
++bool init_in_buf(char *in_buf, uint64_t size);
++
++bool init_out_buf(char *out_buf, uint64_t size);
++
++bool init_log_buf(char *log_buf, uint64_t size);
++
++char *get_alloc_info_log_addr(void);
++
++char *allocate_in_buf(uint64_t size, uint64_t *offset);
++
++void free_in_buf(uint64_t offset);
++
++char *allocate_out_buf(uint64_t size, uint64_t *offset);
++
++void free_out_buf(uint64_t offset);
++
++
++#endif /* _ALLOC_H */
+diff --git a/security/ikgt/common.h b/security/ikgt/common.h
+new file mode 100755
+index 0000000..b99fa1a
+--- /dev/null
++++ b/security/ikgt/common.h
+@@ -0,0 +1,141 @@
++/*
++* This is an example ikgt usage driver.
++* Copyright (c) 2015, Intel Corporation.
++*
++* This program is free software; you can redistribute it and/or modify it
++* under the terms and conditions of the GNU General Public License,
++* version 2, as published by the Free Software Foundation.
++*
++* This program is distributed in the hope it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++* more details.
++*/
++
++#ifndef _COMMON_H
++#define _COMMON_H
++
++#include <linux/module.h>
++#include <linux/configfs.h>
++#include <linux/slab.h>
++#include <linux/stat.h>
++
++#define DEBUG
++
++#define DRIVER_NAME "ikgt_agent"
++#define PREFIX "iKGT: "
++
++#define PRINTK_INFO(fmt, args...)     printk(KERN_INFO PREFIX fmt, ##args)
++#define PRINTK_ERROR(fmt, args...)    printk(KERN_ERR PREFIX fmt, ##args)
++#define PRINTK_WARNING(fmt, args...)  printk(KERN_WARNING PREFIX fmt, ##args)
++
++
++struct group_node {
++	struct config_group group;
++};
++
++static inline struct group_node *to_node(struct config_item *item)
++{
++	return item ? container_of(to_config_group(item), struct group_node,
++		group) : NULL;
++}
++
++#define IKGT_CONFIGFS_TO_CONTAINER(__s)  \
++	static inline struct __s  *to_##__s(struct config_item *item) \
++{ \
++	return item ? container_of(item, struct __s, item) : NULL; \
++}
++
++#define IKGT_CONFIGFS_ATTR_RO(__s, __name)	\
++	CONFIGFS_ATTR_RO(__s##_, __name);
++
++#define IKGT_CONFIGFS_ATTR_RW(__s, __name)				\
++	CONFIGFS_ATTR(__s##_, __name);
++
++#define IKGT_UINT32_SHOW(__s, __name)	\
++	static ssize_t __s##_##__name##_show(struct config_item *item,	\
++	char *page) \
++{	\
++	return sprintf(page, "%u\n", to_##__s(item)->__name);	\
++}
++
++#define IKGT_UINT32_HEX_SHOW(__s, __name)	\
++	static ssize_t __s##_##__name##_show(struct config_item *item, \
++	char *page) \
++{	\
++	return sprintf(page, "0x%X\n", to_##__s(item)->__name);	\
++}
++
++#define IKGT_UINT32_STORE(__s, __name)	\
++	static ssize_t __s##_##__name##_store(struct config_item *item, \
++	const char *page, \
++	size_t count) \
++{ \
++	unsigned long value;\
++	\
++	if (kstrtoul(page, 0, &value)) \
++	return -EINVAL; \
++	to_##__s(item)->__name = value;				\
++	\
++	return count; \
++}
++
++#define IKGT_ULONG_HEX_SHOW(__s, __name)	\
++	static ssize_t __s##_##__name##_show(struct config_item *item,	\
++	char *page) \
++{	\
++	return sprintf(page, "0x%lX\n", to_##__s(item)->__name);	\
++}
++
++#define IKGT_ULONG_HEX_STORE(__s, __name)	\
++	static ssize_t __s##_##__name##_store(struct config_item *item,	\
++	const char *page, \
++	size_t count) \
++{ \
++	unsigned long value;\
++	\
++	if (kstrtoul(page, 16, &value)) \
++	return -EINVAL; \
++	to_##__s(item)->__name = value;				\
++	\
++	return count; \
++}
++
++typedef uint8_t policy_action_r;
++typedef uint8_t policy_action_w;
++typedef uint8_t policy_action_x;
++
++struct cr0_cfg {
++	struct config_item item;
++	bool enable;
++	bool locked;
++	policy_action_w write;
++	unsigned long sticky_value;
++};
++
++struct cr4_cfg {
++	struct config_item item;
++	bool enable;
++	bool locked;
++	policy_action_w write;
++	unsigned long sticky_value;
++};
++
++struct msr_cfg {
++	struct config_item item;
++	bool enable;
++	bool locked;
++	policy_action_w write;
++	unsigned long sticky_value;
++};
++
++typedef struct _name_value_map {
++	const char *name;
++	unsigned long value;
++	uint32_t res_id;
++} name_value_map;
++
++
++void ikgt_debug(uint64_t parameter);
++
++#endif /* _COMMON_H */
+diff --git a/security/ikgt/common_types.h b/security/ikgt/common_types.h
+new file mode 100644
+index 0000000..2cc2773
+--- /dev/null
++++ b/security/ikgt/common_types.h
+@@ -0,0 +1,145 @@
++/*******************************************************************************
++* Copyright (c) 2015 Intel Corporation
++*
++* Licensed under the Apache License, Version 2.0 (the "License");
++* you may not use this file except in compliance with the License.
++* You may obtain a copy of the License at
++*
++*      http://www.apache.org/licenses/LICENSE-2.0
++*
++* Unless required by applicable law or agreed to in writing, software
++* distributed under the License is distributed on an "AS IS" BASIS,
++* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++* See the License for the specific language governing permissions and
++* limitations under the License.
++*******************************************************************************/
++#ifndef _COMMON_TYPES_H_
++#define _COMMON_TYPES_H_
++
++/*
++ *
++ *  Calling conventions
++ *
++ */
++
++#define API_FUNCTION
++#define ASM_FUNCTION
++#define CDECL
++#define STDCALL
++
++#define PACKED  __attribute((packed))
++#define PACK_ON
++#define PACK_OFF
++#define UNUSED  __attribute__((unused))
++
++typedef signed char int8_t;
++typedef signed short int16_t;
++typedef signed int int32_t;
++typedef long long int64_t;
++
++#ifndef FALSE
++#define FALSE 0
++#endif
++
++#ifndef TRUE
++#define TRUE 1
++#endif
++
++typedef void void_t;
++typedef int32_t boolean_t;
++
++typedef unsigned char uint8_t;
++typedef unsigned short uint16_t;
++typedef unsigned int uint32_t;
++typedef unsigned long long uint64_t;
++typedef uint8_t char8_t;
++typedef uint16_t char16_t;
++
++
++typedef struct {
++	uint64_t uint64[2];
++} uint128_t;
++
++typedef uint32_t bool32_t;
++
++#define MAX_CPUS       80
++
++#define TOTAL_INT_VECTORS       256 /* vectors in the IDT */
++
++#define MAX_INSTRUCTION_LENGTH 15
++
++/* Num/Len of 64-bit array requred to represent
++ * the bitmap vectors of max count n (n >= 1). */
++#define NUM_OF_64BIT_ARRAY(n)  (((n) + 63) >> 6)
++
++#define CPU_BITMAP_MAX  NUM_OF_64BIT_ARRAY(MAX_CPUS)
++
++#define MSR_LOW_FIRST   0
++#define MSR_LOW_LAST    0x1FFF
++#define MSR_HIGH_FIRST  0xC0000000
++#define MSR_HIGH_LAST   0xC0001FFF
++
++/* used for CPUID leaf 0x3.
++ * if the signature is matched, then xmon is running. */
++#define XMON_RUNNING_SIGNATURE_CORP 0x43544E49  /* "INTC", edx */
++#define XMON_RUNNING_SIGNATURE_MON  0x4D4D5645  /* "XMON", ecx */
++
++typedef struct {
++	uint64_t	m_rax;
++	uint64_t	m_rbx;
++	uint64_t	m_rcx;
++	uint64_t	m_rdx;
++} cpuid_params_t;
++
++typedef struct {
++	uint64_t	img_start_gpa;
++	uint64_t	img_end_gpa;
++	uint64_t	heap_start_gpa;
++	uint64_t	heap_end_gpa;
++} memory_config_t;
++
++#ifdef EFI32
++#define ARCH_ADDRESS_WIDTH 4
++#endif
++
++#ifndef ARCH_ADDRESS_WIDTH
++#define ARCH_ADDRESS_WIDTH 8
++#endif
++
++#if 8 == ARCH_ADDRESS_WIDTH
++typedef uint64_t address_t;
++#else
++typedef uint32_t address_t;
++#endif
++
++#ifndef NULL
++#define NULL ((void *)0)
++#endif
++
++typedef uint16_t cpu_id_t;
++typedef uint16_t guest_id_t;
++typedef uint8_t vector_id_t;
++typedef address_t hva_t;
++typedef address_t hpa_t;
++typedef address_t gva_t;
++typedef address_t gpa_t;
++typedef uint32_t msr_id_t;
++typedef uint16_t io_port_id_t;
++
++typedef struct {
++	guest_id_t	guest_id;
++	cpu_id_t	guest_cpu_id; /* guest cpu id and not host */
++} guest_vcpu_t;
++
++typedef struct {
++	boolean_t	primary_guest;
++	guest_id_t	guest_id;
++	uint16_t	padding;
++} guest_data_t;
++
++typedef enum {
++	MON_ERROR = -1,
++	MON_OK
++} mon_status_t;
++
++#endif
+diff --git a/security/ikgt/configfs_setup.c b/security/ikgt/configfs_setup.c
+new file mode 100755
+index 0000000..4546312
+--- /dev/null
++++ b/security/ikgt/configfs_setup.c
+@@ -0,0 +1,153 @@
++/*
++* This is an example ikgt usage driver.
++* Copyright (c) 2015, Intel Corporation.
++*
++* This program is free software; you can redistribute it and/or modify it
++* under the terms and conditions of the GNU General Public License,
++* version 2, as published by the Free Software Foundation.
++*
++* This program is distributed in the hope it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++* more details.
++*/
++
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/slab.h>
++
++#include "common.h"
++
++
++extern struct configfs_subsystem *create_log_node(void);
++extern struct config_item_type *get_cr0_children_type(void);
++extern struct config_item_type *get_cr4_children_type(void);
++extern struct config_item_type *get_msr_children_type(void);
++extern struct config_item_type *get_log_children_type(void);
++
++/* ----------------------------------------------------------------- */
++/* Creates configfs nodes for various cpu assets to enable
++* monitoring.
++* e.g.
++* /configfs/ikgt_agent/cr0/PE/
++*					/MP/
++* /configfs/ikgt_agent/cr4/SMEP/
++*                   /SMAP/
++*                   /VMXE/
++*/
++
++#define GROUP_NAME_CR0       "cr0"
++#define GROUP_NAME_CR4       "cr4"
++#define GROUP_NAME_MSR       "msr"
++#define GROUP_NAME_LOG       "log"
++
++static struct config_group *group_children_make_group(struct config_group *group,
++													  const char *name)
++{
++	struct group_node *cfg;
++
++	PRINTK_INFO("Creating configfs node for %s\n", name);
++
++	cfg = kzalloc(sizeof(struct group_node), GFP_KERNEL);
++	if (!cfg) {
++		return ERR_PTR(-ENOMEM);
++	}
++
++	if (strcasecmp(name, GROUP_NAME_CR0) == 0) {
++		config_group_init_type_name(&cfg->group, name,
++			get_cr0_children_type());
++	} else if (strcasecmp(name, GROUP_NAME_CR4) == 0) {
++		config_group_init_type_name(&cfg->group, name,
++			get_cr4_children_type());
++	} else if (strcasecmp(name, GROUP_NAME_MSR) == 0) {
++		config_group_init_type_name(&cfg->group, name,
++			get_msr_children_type());
++	} else if (strcasecmp(name, GROUP_NAME_LOG) == 0) {
++		config_group_init_type_name(&cfg->group, name,
++			get_log_children_type());
++	}
++
++	return &cfg->group;
++}
++
++static ssize_t group_children_description_show(struct config_item *item,
++											   char *page)
++{
++		return sprintf(page,
++					   DRIVER_NAME"\n"
++					   "These file subsystem allows to create groups for various cpu assets.\n"
++					   "These groups can be cr0, cr4, msr, log, etc.\n");
++}
++
++static struct configfs_attribute group_children_attr_description = {
++	.ca_owner	= THIS_MODULE,
++	.ca_name	= "description",
++	.ca_mode	= S_IRUGO,
++	.show       = group_children_description_show
++};
++
++static struct configfs_attribute *group_children_attrs[] = {
++	&group_children_attr_description,
++	NULL,
++};
++
++static struct configfs_group_operations group_children_group_ops = {
++	.make_group	= group_children_make_group,
++};
++
++static struct config_item_type group_children_type = {
++	.ct_group_ops = &group_children_group_ops,
++	.ct_attrs	= group_children_attrs,
++	.ct_owner	= THIS_MODULE,
++};
++
++static struct configfs_subsystem group_children_subsys = {
++	.su_group			= {
++		.cg_item		= {
++			.ci_namebuf	= DRIVER_NAME,
++			.ci_type	= &group_children_type,
++		},
++	},
++};
++
++/*
++* Entry point for configfs setup
++*/
++static struct configfs_subsystem *configfs_subsys[] = {
++	&group_children_subsys,
++	NULL,
++};
++
++void init_configfs_setup(void)
++{
++	int ret;
++	int i;
++	struct configfs_subsystem *subsys;
++
++	for (i = 0; configfs_subsys[i]; i++) {
++		subsys = configfs_subsys[i];
++		config_group_init(&subsys->su_group);
++		mutex_init(&subsys->su_mutex);
++		ret = configfs_register_subsystem(subsys);
++		if (ret) {
++			PRINTK_ERROR("Error %d while registering subsystem %s\n",
++				ret,
++				subsys->su_group.cg_item.ci_namebuf);
++			goto out_unregister;
++		}
++	}
++
++	return;
++
++out_unregister:
++	for (i--; i >= 0; i--)
++		configfs_unregister_subsystem(configfs_subsys[i]);
++}
++
++void uninit_configfs_setup(void)
++{
++	int i;
++
++	for (i = 0; configfs_subsys[i]; i++)
++		configfs_unregister_subsystem(configfs_subsys[i]);
++}
+diff --git a/security/ikgt/configfs_setup.h b/security/ikgt/configfs_setup.h
+new file mode 100755
+index 0000000..a7a37cb
+--- /dev/null
++++ b/security/ikgt/configfs_setup.h
+@@ -0,0 +1,21 @@
++/*
++ * This is an example ikgt usage driver.
++ * Copyright (c) 2015, Intel Corporation.
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms and conditions of the GNU General Public License,
++ * version 2, as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ */
++
++#ifndef CONFIGFS_SETUP_H
++#define CONFIGFS_SETUP_H
++
++extern void init_configfs_setup(void);
++extern void uninit_configfs_setup(void);
++
++#endif /* CONFIGFS_SETUP */
+diff --git a/security/ikgt/cr0.c b/security/ikgt/cr0.c
+new file mode 100755
+index 0000000..7b537a9
+--- /dev/null
++++ b/security/ikgt/cr0.c
+@@ -0,0 +1,285 @@
++/*
++* This is an example ikgt usage driver.
++* Copyright (c) 2015, Intel Corporation.
++*
++* This program is free software; you can redistribute it and/or modify it
++* under the terms and conditions of the GNU General Public License,
++* version 2, as published by the Free Software Foundation.
++*
++* This program is distributed in the hope it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++* more details.
++*/
++
++#include <linux/module.h>
++
++#include "ikgt_api.h"
++#include "common.h"
++#include "alloc.h"
++
++static name_value_map cr0_bits[] = {
++	{ "PE", PE, RESOURCE_ID_CR0_PE},
++	{ "MP", MP, RESOURCE_ID_CR0_MP},
++	{ "EM", EM, RESOURCE_ID_CR0_EM},
++	{ "TS", TS, RESOURCE_ID_CR0_TS},
++	{ "ET", ET, RESOURCE_ID_CR0_ET},
++	{ "NE", NE, RESOURCE_ID_CR0_NE},
++	{ "WP", WP, RESOURCE_ID_CR0_WP},
++	{ "AM", AM, RESOURCE_ID_CR0_AM},
++	{ "NW", NW, RESOURCE_ID_CR0_NW},
++	{ "CD", CD, RESOURCE_ID_CR0_CD},
++	{ "PG", PG, RESOURCE_ID_CR0_PG},
++
++	/* Table terminator */
++	{}
++};
++
++static ssize_t cr0_cfg_enable_store(struct config_item *item,
++									const char *page,
++									size_t count);
++
++static ssize_t cr0_cfg_write_store(struct config_item *item,
++								   const char *page,
++								   size_t count);
++
++static ssize_t cr0_cfg_sticky_value_store(struct config_item *item,
++										  const char *page,
++										  size_t count);
++
++/* to_cr0_cfg() function */
++IKGT_CONFIGFS_TO_CONTAINER(cr0_cfg);
++
++/* item operations */
++IKGT_UINT32_SHOW(cr0_cfg, enable);
++IKGT_UINT32_HEX_SHOW(cr0_cfg, write);
++IKGT_ULONG_HEX_SHOW(cr0_cfg, sticky_value);
++
++/* attributes */
++IKGT_CONFIGFS_ATTR_RW(cr0_cfg, enable);
++IKGT_CONFIGFS_ATTR_RW(cr0_cfg, write);
++IKGT_CONFIGFS_ATTR_RW(cr0_cfg, sticky_value);
++
++static struct configfs_attribute *cr0_cfg_attrs[] = {
++	&cr0_cfg_attr_enable,
++	&cr0_cfg_attr_write,
++	&cr0_cfg_attr_sticky_value,
++	NULL,
++};
++
++
++static int valid_cr0_attr(const char *name)
++{
++	int i;
++
++	for (i = 0; cr0_bits[i].name; i++) {
++		if (strcasecmp(cr0_bits[i].name, name) == 0) {
++			return i;
++		}
++	}
++
++	return -1;
++}
++
++/*-------------------------------------------------------*
++*  Function      : policy_set_cr0()
++*  Purpose: send the CR0 policy settings to handler
++*  Parameters: cr0_cfg, enable
++*  Return: true=success, false=failure
++*-------------------------------------------------------*/
++static bool policy_set_cr0(struct cr0_cfg *cr0_cfg, bool enable)
++{
++	policy_message_t *msg = NULL;
++	policy_update_rec_t *entry = NULL;
++	uint64_t ret;
++	message_id_t msg_id;
++	uint64_t in_offset;
++	int idx = valid_cr0_attr(cr0_cfg->item.ci_name);
++
++	if (idx < 0)
++		return false;
++
++	msg = (policy_message_t *)allocate_in_buf(sizeof(policy_message_t), &in_offset);
++	if (msg == NULL)
++		return false;
++
++	msg_id = enable?POLICY_ENTRY_ENABLE:POLICY_ENTRY_DISABLE;
++
++	entry = &msg->policy_data[0];
++
++	POLICY_SET_RESOURCE_ID(entry, cr0_bits[idx].res_id);
++	POLICY_SET_WRITE_ACTION(entry, cr0_cfg->write);
++
++	POLICY_SET_STICKY_VALUE(entry, cr0_cfg->sticky_value);
++
++	POLICY_INFO_SET_MASK(entry, cr0_bits[idx].value);
++	POLICY_INFO_SET_CPU_MASK_1(entry, -1);
++	POLICY_INFO_SET_CPU_MASK_2(entry, -1);
++
++	PRINTK_INFO("cpumask: %llx, %llx\n",
++		POLICY_INFO_GET_CPU_MASK_1(entry), POLICY_INFO_GET_CPU_MASK_2(entry));
++
++	ret = ikgt_hypercall(msg_id, in_offset, 0);
++	if (SUCCESS != ret) {
++		PRINTK_ERROR("%s: ikgt_hypercall failed, ret=%llu\n", __func__, ret);
++	}
++
++	free_in_buf(in_offset);
++
++	return (ret == SUCCESS)?true:false;
++}
++
++static ssize_t cr0_cfg_write_store(struct config_item *item,
++								   const char *page,
++								   size_t count)
++{
++	unsigned long value;
++
++	struct cr0_cfg *cr0_cfg = to_cr0_cfg(item);
++
++	if (cr0_cfg->locked)
++		return -EPERM;
++
++	if (kstrtoul(page, 0, &value))
++		return -EINVAL;
++
++	cr0_cfg->write = value;
++
++	return count;
++}
++
++static ssize_t cr0_cfg_sticky_value_store(struct config_item *item,
++										  const char *page,
++										  size_t count)
++{
++	unsigned long value;
++
++	struct cr0_cfg *cr0_cfg = to_cr0_cfg(item);
++
++	if (cr0_cfg->locked)
++		return -EPERM;
++
++	if (kstrtoul(page, 0, &value))
++		return -EINVAL;
++
++	cr0_cfg->sticky_value = value;
++
++	return count;
++}
++
++static ssize_t cr0_cfg_enable_store(struct config_item *item,
++									const char *page,
++									size_t count)
++{
++	unsigned long value;
++	bool ret = false;
++
++	struct cr0_cfg *cr0_cfg = to_cr0_cfg(item);
++
++	if (kstrtoul(page, 0, &value))
++		return -EINVAL;
++
++	if (cr0_cfg->locked) {
++		PRINTK_INFO("Sticky is set and locked!\n");
++		return -EPERM;
++	}
++
++	ret = policy_set_cr0(cr0_cfg, value);
++
++	if (ret) {
++		cr0_cfg->enable = value;
++	}
++
++	if (ret && (cr0_cfg->write & POLICY_ACT_STICKY))
++		cr0_cfg->locked = true;
++
++	return count;
++}
++
++static void cr0_cfg_release(struct config_item *item)
++{
++	kfree(to_cr0_cfg(item));
++}
++
++static struct configfs_item_operations cr0_cfg_ops = {
++	.release		= cr0_cfg_release,
++};
++
++static struct config_item_type cr0_cfg_type = {
++	.ct_item_ops	= &cr0_cfg_ops,
++	.ct_attrs	= cr0_cfg_attrs,
++	.ct_owner	= THIS_MODULE,
++};
++
++
++static struct config_item *cr0_make_item(struct config_group *group,
++										 const char *name)
++{
++	struct cr0_cfg *cr0_cfg;
++
++	PRINTK_INFO("create attr name %s\n", name);
++
++	if (valid_cr0_attr(name) == -1) {
++		PRINTK_ERROR("Invalid CR0 bit name\n");
++		return NULL;
++	}
++
++	cr0_cfg = kzalloc(sizeof(struct cr0_cfg), GFP_KERNEL);
++	if (!cr0_cfg) {
++		return ERR_PTR(-ENOMEM);
++	}
++
++	config_item_init_type_name(&cr0_cfg->item, name,
++		&cr0_cfg_type);
++
++
++	return &cr0_cfg->item;
++}
++
++static ssize_t cr0_children_description_show(struct config_item *item,
++									  char *page)
++{
++		return sprintf(page,
++					   "CR0\n"
++					   "\n"
++					   "Used in protected mode to control operations .  \n"
++					   "items are readable and writable.\n");
++}
++
++static struct configfs_attribute cr0_children_attr_description = {
++	.ca_owner	= THIS_MODULE,
++	.ca_name	= "description",
++	.ca_mode	= S_IRUGO,
++	.show       = cr0_children_description_show,
++};
++
++static struct configfs_attribute *cr0_children_attrs[] = {
++	&cr0_children_attr_description,
++	NULL,
++};
++
++
++static void cr0_children_release(struct config_item *item)
++{
++	kfree(to_node(item));
++}
++
++static struct configfs_item_operations cr0_children_item_ops = {
++	.release	= cr0_children_release,
++};
++
++static struct configfs_group_operations cr0_children_group_ops = {
++	.make_item	= cr0_make_item,
++};
++
++static struct config_item_type cr0_children_type = {
++	.ct_item_ops	= &cr0_children_item_ops,
++	.ct_group_ops	= &cr0_children_group_ops,
++	.ct_attrs	= cr0_children_attrs,
++	.ct_owner	= THIS_MODULE,
++};
++
++struct config_item_type *get_cr0_children_type(void)
++{
++	return &cr0_children_type;
++}
+diff --git a/security/ikgt/cr4.c b/security/ikgt/cr4.c
+new file mode 100755
+index 0000000..7fdce88
+--- /dev/null
++++ b/security/ikgt/cr4.c
+@@ -0,0 +1,284 @@
++/*
++* This is an example ikgt usage driver.
++* Copyright (c) 2015, Intel Corporation.
++*
++* This program is free software; you can redistribute it and/or modify it
++* under the terms and conditions of the GNU General Public License,
++* version 2, as published by the Free Software Foundation.
++*
++* This program is distributed in the hope it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++* more details.
++*/
++
++#include <linux/module.h>
++
++#include "ikgt_api.h"
++#include "common.h"
++#include "alloc.h"
++
++static name_value_map cr4_bits[] = {
++	{"VME",        VME,        RESOURCE_ID_CR4_VME},
++	{"PVI",        PVI,        RESOURCE_ID_CR4_PVI},
++	{"TSD",        TSD,        RESOURCE_ID_CR4_TSD},
++	{"DE",         DE,         RESOURCE_ID_CR4_DE},
++	{"PSE",        PSE,        RESOURCE_ID_CR4_PSE},
++	{"PAE",        PAE,        RESOURCE_ID_CR4_PAE},
++	{"MCE",        MCE,        RESOURCE_ID_CR4_MCE},
++	{"PGE",        PGE,        RESOURCE_ID_CR4_PGE},
++	{"PCE",        PCE,        RESOURCE_ID_CR4_PCE},
++	{"OSFXSR",     OSFXSR,     RESOURCE_ID_CR4_OSFXSR},
++	{"OSXMMEXCPT", OSXMMEXCPT, RESOURCE_ID_CR4_OSXMMEXCPT},
++	{"VMXE",       VMXE,       RESOURCE_ID_CR4_VMXE},
++	{"SMXE",       SMXE,       RESOURCE_ID_CR4_SMXE},
++	{"PCIDE",      PCIDE,      RESOURCE_ID_CR4_PCIDE},
++	{"OSXSAVE",    OSXSAVE,    RESOURCE_ID_CR4_OSXSAVE},
++	{"SMEP",       SMEP,       RESOURCE_ID_CR4_SMEP},
++	{"SMAP",       SMAP,       RESOURCE_ID_CR4_SMAP},
++
++	/* Table terminator */
++	{}
++};
++
++static ssize_t cr4_cfg_enable_store(struct config_item *item,
++									const char *page,
++									size_t count);
++
++static ssize_t cr4_cfg_write_store(struct config_item *item,
++								   const char *page,
++								   size_t count);
++
++static ssize_t cr4_cfg_sticky_value_store(struct config_item *item,
++										  const char *page,
++										  size_t count);
++
++/* to_cr4_cfg() function */
++IKGT_CONFIGFS_TO_CONTAINER(cr4_cfg);
++
++/* item operations */
++IKGT_UINT32_SHOW(cr4_cfg, enable);
++IKGT_UINT32_HEX_SHOW(cr4_cfg, write);
++IKGT_ULONG_HEX_SHOW(cr4_cfg, sticky_value);
++
++/* attributes */
++IKGT_CONFIGFS_ATTR_RW(cr4_cfg, enable);
++IKGT_CONFIGFS_ATTR_RW(cr4_cfg, write);
++IKGT_CONFIGFS_ATTR_RW(cr4_cfg, sticky_value);
++
++static struct configfs_attribute *cr4_cfg_attrs[] = {
++	&cr4_cfg_attr_enable,
++	&cr4_cfg_attr_write,
++	&cr4_cfg_attr_sticky_value,
++	NULL,
++};
++
++static int valid_cr4_attr(const char *name)
++{
++	int i;
++
++	for (i = 0; cr4_bits[i].name; i++) {
++		if (strcasecmp(cr4_bits[i].name, name) == 0) {
++			return i;
++		}
++	}
++
++	return -1;
++}
++
++static bool policy_set_cr4(struct cr4_cfg *cr4_cfg, bool enable)
++{
++	policy_message_t *msg = NULL;
++	policy_update_rec_t *entry = NULL;
++	uint64_t ret;
++	message_id_t msg_id;
++	uint64_t in_offset;
++	int idx = valid_cr4_attr(cr4_cfg->item.ci_name);
++
++	if (idx < 0)
++		return false;
++
++	msg = (policy_message_t *)allocate_in_buf(sizeof(policy_message_t), &in_offset);
++	if (msg == NULL)
++		return false;
++
++	msg_id = enable?POLICY_ENTRY_ENABLE:POLICY_ENTRY_DISABLE;
++	msg->count = 1;
++
++	entry = &msg->policy_data[0];
++
++	POLICY_SET_RESOURCE_ID(entry, cr4_bits[idx].res_id);
++	POLICY_SET_WRITE_ACTION(entry, cr4_cfg->write);
++
++	POLICY_SET_STICKY_VALUE(entry, cr4_cfg->sticky_value);
++
++	POLICY_INFO_SET_MASK(entry, cr4_bits[idx].value);
++
++	POLICY_INFO_SET_CPU_MASK_1(entry, -1);
++	POLICY_INFO_SET_CPU_MASK_2(entry, -1);
++
++	PRINTK_INFO("cpumask: %llx, %llx\n",
++		POLICY_INFO_GET_CPU_MASK_1(entry), POLICY_INFO_GET_CPU_MASK_2(entry));
++
++	ret = ikgt_hypercall(msg_id, in_offset, 0);
++	if (SUCCESS != ret) {
++		PRINTK_ERROR("%s: ikgt_hypercall failed, ret=%llu\n", __func__, ret);
++	}
++
++	free_in_buf(in_offset);
++
++	return (ret == SUCCESS)?true:false;
++}
++
++static ssize_t cr4_cfg_write_store(struct config_item *item,
++								   const char *page,
++								   size_t count)
++{
++	unsigned long value;
++
++	struct cr4_cfg *cr4_cfg = to_cr4_cfg(item);
++
++	if (cr4_cfg->locked)
++		return -EPERM;
++
++	if (kstrtoul(page, 0, &value))
++		return -EINVAL;
++
++	cr4_cfg->write = value;
++
++	return count;
++}
++
++static ssize_t cr4_cfg_sticky_value_store(struct config_item *item,
++										  const char *page,
++										  size_t count)
++{
++	unsigned long value;
++
++	struct cr4_cfg *cr4_cfg = to_cr4_cfg(item);
++
++	if (cr4_cfg->locked)
++		return -EPERM;
++
++	if (kstrtoul(page, 0, &value))
++		return -EINVAL;
++
++	cr4_cfg->sticky_value = value;
++
++	return count;
++}
++
++static ssize_t cr4_cfg_enable_store(struct config_item *item,
++									const char *page,
++									size_t count)
++{
++	unsigned long value;
++	bool ret = false;
++
++	struct cr4_cfg *cr4_cfg = to_cr4_cfg(item);
++
++	if (kstrtoul(page, 0, &value))
++		return -EINVAL;
++
++	if (cr4_cfg->locked) {
++		return -EPERM;
++	}
++
++	ret = policy_set_cr4(cr4_cfg, value);
++
++	if (ret) {
++		cr4_cfg->enable = value;
++	}
++
++	if (ret && (cr4_cfg->write & POLICY_ACT_STICKY))
++		cr4_cfg->locked = true;
++
++	return count;
++}
++
++
++static void cr4_cfg_release(struct config_item *item)
++{
++	kfree(to_cr4_cfg(item));
++}
++
++static struct configfs_item_operations cr4_cfg_ops = {
++	.release = cr4_cfg_release,
++};
++
++static struct config_item_type cr4_cfg_type = {
++	.ct_item_ops = &cr4_cfg_ops,
++	.ct_attrs = cr4_cfg_attrs,
++	.ct_owner = THIS_MODULE,
++};
++
++
++static struct config_item *cr4_make_item(struct config_group *group,
++										 const char *name)
++{
++	struct cr4_cfg *cr4_cfg;
++
++	PRINTK_INFO("CR4 create attribute file %s\n", name);
++
++	if (valid_cr4_attr(name) == -1) {
++		PRINTK_ERROR("Invalid CR4 bit name\n");
++		return ERR_PTR(-EINVAL);
++	}
++
++	cr4_cfg = kzalloc(sizeof(struct cr4_cfg), GFP_KERNEL);
++	if (!cr4_cfg) {
++		return ERR_PTR(-ENOMEM);
++	}
++
++	config_item_init_type_name(&cr4_cfg->item, name,
++		&cr4_cfg_type);
++
++	return &cr4_cfg->item;
++}
++
++static ssize_t cr4_children_description_show(struct config_item *item,
++									  char *page)
++{
++		return sprintf(page,
++					   "CR4\n"
++					   "\n"
++					   "Used in protected mode to control operations .  \n"
++					   "items are readable and writable.\n");
++}
++
++static struct configfs_attribute cr4_children_attr_description = {
++	.ca_owner	= THIS_MODULE,
++	.ca_name	= "description",
++	.ca_mode	= S_IRUGO,
++	.show       = cr4_children_description_show,
++};
++
++static struct configfs_attribute *cr4_children_attrs[] = {
++	&cr4_children_attr_description,
++	NULL,
++};
++
++static void cr4_children_release(struct config_item *item)
++{
++	kfree(to_node(item));
++}
++
++static struct configfs_item_operations cr4_children_item_ops = {
++	.release	= cr4_children_release,
++};
++
++static struct configfs_group_operations cr4_children_group_ops = {
++	.make_item	= cr4_make_item,
++};
++
++static struct config_item_type cr4_children_type = {
++	.ct_item_ops	= &cr4_children_item_ops,
++	.ct_group_ops	= &cr4_children_group_ops,
++	.ct_attrs	= cr4_children_attrs,
++	.ct_owner	= THIS_MODULE,
++};
++
++struct config_item_type *get_cr4_children_type(void)
++{
++	return &cr4_children_type;
++}
+diff --git a/security/ikgt/debug.c b/security/ikgt/debug.c
+new file mode 100755
+index 0000000..bb743f0
+--- /dev/null
++++ b/security/ikgt/debug.c
+@@ -0,0 +1,157 @@
++/*
++* This is an example ikgt usage driver.
++* Copyright (c) 2015, Intel Corporation.
++*
++* This program is free software; you can redistribute it and/or modify it
++* under the terms and conditions of the GNU General Public License,
++* version 2, as published by the Free Software Foundation.
++*
++* This program is distributed in the hope it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++* more details.
++*/
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/slab.h>
++
++#include <linux/kobject.h>
++#include <linux/sysctl.h>
++#include <linux/pagemap.h>
++
++#include "ikgt_api.h"
++#include "common.h"
++#include "debug.h"
++#include "log.h"
++#include "alloc.h"
++
++
++#ifdef DEBUG
++static int ikgt_agent_debug;
++
++void test_hypercall(void);
++
++
++static int ikgt_systl_debug(struct ctl_table *ctl, int write,
++							void __user *buffer, size_t *count,
++							loff_t *ppos)
++{
++	unsigned long val;
++	int len, rc;
++	char buf[32];
++
++	if (!*count || (*ppos && !write)) {
++		*count = 0;
++		return 0;
++	}
++
++	if (!write) {
++		len = snprintf(buf, sizeof(buf), "%d\n", ikgt_agent_debug);
++		rc = copy_to_user(buffer, buf, sizeof(buf));
++		if (rc != 0)
++			return -EFAULT;
++	} else {
++		len = *count;
++		rc = kstrtoul_from_user(buffer, len, 0, &val);
++		if (rc)
++			return rc;
++
++		ikgt_agent_debug = val;
++
++		switch (val) {
++		case 1000:
++			test_log();
++			break;
++
++		case 1001:
++			test_hypercall();
++			break;
++
++		default:
++			ikgt_debug(val);
++			break;
++		}
++	}
++	*count = len;
++	*ppos += len;
++
++
++	return 0;
++}
++
++/* sysctl -w kernel.ikgt_agent_debug=100 */
++static struct ctl_table ikgt_sysctl_table[] = {
++	{
++		.procname	= "ikgt_agent_debug",
++			.mode	= 0644,
++			.proc_handler	= ikgt_systl_debug,
++	},
++	{}
++};
++
++static struct ctl_table kern_dir_table[] = {
++	{
++		.procname	= "kernel",
++			.maxlen		= 0,
++			.mode		= 0555,
++			.child		= ikgt_sysctl_table,
++	},
++	{}
++};
++
++static struct ctl_table_header *ikgt_sysctl_header;
++
++
++void ikgt_debug(uint64_t parameter)
++{
++	policy_message_t *msg;
++	uint64_t ret;
++	uint64_t in_offset;
++
++	PRINTK_INFO("%s: parameter=%llu\n", __func__, parameter);
++
++	msg = (policy_message_t *)allocate_in_buf(sizeof(policy_message_t), &in_offset);
++	if (msg == NULL)
++		return;
++
++	msg->count = 1;
++	msg->debug_param.parameter = parameter;
++
++	ret = ikgt_hypercall(POLICY_DEBUG, in_offset, 0);
++	if (SUCCESS != ret) {
++		PRINTK_ERROR("%s: ikgt_hypercall failed, ret=%llu\n", __func__, ret);
++	}
++
++	free_in_buf(in_offset);
++}
++
++void test_hypercall(void)
++{
++	uint64_t out_buf;
++	uint64_t out_offset;
++	uint64_t ret;
++
++	out_buf = (uint64_t)allocate_out_buf(sizeof(policy_message_t), &out_offset);
++
++	ret = ikgt_hypercall(POLICY_GET_TEST, 0, out_offset);
++	if (SUCCESS != ret) {
++		PRINTK_ERROR("%s: ikgt_hypercall failed, ret=%llu\n", __func__, ret);
++	}
++
++	PRINTK_INFO("%s: *0x%llx=0x%llx\n", __func__, out_buf, *(uint64_t *)out_buf);
++
++	free_out_buf(out_offset);
++}
++
++void init_debug(void)
++{
++	ikgt_sysctl_header = register_sysctl_table(kern_dir_table);
++}
++
++void uninit_debug(void)
++{
++	unregister_sysctl_table(ikgt_sysctl_header);
++}
++
++#endif
+diff --git a/security/ikgt/debug.h b/security/ikgt/debug.h
+new file mode 100755
+index 0000000..b9adf2d
+--- /dev/null
++++ b/security/ikgt/debug.h
+@@ -0,0 +1,24 @@
++/*
++* This is an example ikgt usage driver.
++* Copyright (c) 2015, Intel Corporation.
++*
++* This program is free software; you can redistribute it and/or modify it
++* under the terms and conditions of the GNU General Public License,
++* version 2, as published by the Free Software Foundation.
++*
++* This program is distributed in the hope it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++* more details.
++*/
++
++#ifndef _DEBUG_H
++#define _DEBUG_H
++
++void ikgt_debug(uint64_t parameter);
++
++void init_debug(void);
++
++void uninit_debug(void);
++
++#endif /* _DEBUG_H */
+diff --git a/security/ikgt/em64t/ikgt_api.S b/security/ikgt/em64t/ikgt_api.S
+new file mode 100755
+index 0000000..d9c18f5
+--- /dev/null
++++ b/security/ikgt/em64t/ikgt_api.S
+@@ -0,0 +1,75 @@
++################################################################################
++# This is an example usage of iKGT.
++# Copyright (c) 2015, Intel Corporation.
++#
++# This program is free software; you can redistribute it and/or modify it
++# under the terms and conditions of the GNU General Public License,
++# version 2, as published by the Free Software Foundation.
++#
++# This program is distributed in the hope it will be useful, but WITHOUT
++# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++# more details.
++################################################################################
++
++.global asm_make_vmcall
++.global asm_is_cpuid_supported
++
++#;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
++#;uint64_t asm_make_vmcall(uint64_t P_RDI, uint64_t P_RSI, uint64_t P_RDX)
++#;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
++asm_make_vmcall:
++    pushq %rsi
++    pushq %rdi
++    pushq %rbx
++    
++   
++    #setup params
++    # 1st parameter
++    movq %rdi, %rax
++    # 2nd parameter
++    movq %rsi, %rcx
++    # rdx has the third parameter
++
++    movq $0x0, %rsi
++    movq $0x0, %rdi
++
++    #vmcall
++    vmcall
++
++    popq %rbx
++    popq %rdi
++    popq %rsi
++
++    ret
++
++
++#;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
++#uint64_t asm_is_cpuid_supported(void)
++#;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
++asm_is_cpuid_supported:
++    # Get EFLAGS
++    pushfq
++    popq %rax
++    movq %rax, %rcx /* store first eflag in rcx */
++
++    xorq $0x200000, %rax
++    # Load EFLAGS
++    pushq %rax
++    popfq
++
++    # Get EFLAGS now
++    pushfq
++    popq %rax
++
++    # compare first and second flags
++    xorq %rcx, %rax
++    andq $0x200000, %rax
++
++    # Restore RFLAGS
++    pushq %rcx
++    popfq
++
++    # rax is not modified, return
++    ret
++
+diff --git a/security/ikgt/ikgt_api.c b/security/ikgt/ikgt_api.c
+new file mode 100755
+index 0000000..b221e64
+--- /dev/null
++++ b/security/ikgt/ikgt_api.c
+@@ -0,0 +1,131 @@
++/*******************************************************************************
++* This is an example usage of iKGT.
++* Copyright (c) 2015, Intel Corporation.
++*
++* This program is free software; you can redistribute it and/or modify it
++* under the terms and conditions of the GNU General Public License,
++* version 2, as published by the Free Software Foundation.
++*
++* This program is distributed in the hope it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++* more details.
++*******************************************************************************/
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/slab.h>
++
++#include "ikgt_vmx_if.h"
++#include "ikgt_api.h"
++#include "policy_common.h"
++
++
++extern uint64_t asm_make_vmcall(uint64_t P_RSI, uint64_t P_RDI, uint64_t P_RDX);
++extern uint64_t asm_is_cpuid_supported(void);
++
++static bool ikgt_first = true;
++static bool ikgt_running;
++
++
++/*
++* Method to check if CPUID instruction is supported on this platform
++* Returns - SUCCESS if supported, else ERROR
++*/
++static uint64_t is_cpuid_supported(void)
++{
++	if (asm_is_cpuid_supported() != 0) {
++		return SUCCESS;
++	} else {
++		return ERROR;
++	}
++}
++
++/*
++* ikgt_running_check API checks whether Guest OS is running on IKGT
++* Returns - SUCCESS if IKGT is running, else ERROR
++*/
++static uint64_t ikgt_running_check(void)
++{
++	uint64_t cpu_info[4], i, a;
++
++	for (i = 0; i < 4; i++)
++		cpu_info[i] = 0;
++
++	/* Check whether CPUID instruction is supported or not */
++	if (is_cpuid_supported() == ERROR) {
++		printk(KERN_WARNING "CPUID instruction is not supported\n");
++		return ERROR;
++	}
++
++	/* CPUID instruction with 3 as parameter */
++	a = 3;
++	asm ("movq %4, %%rax;" "cpuid;"
++		: "=a" (cpu_info[0]),
++		"=b" (cpu_info[1]),
++		"=c" (cpu_info[2]),
++		"=d" (cpu_info[3])
++		: "r" (a) /* input */
++		:
++	);
++
++
++	/* If signature is matched, IKGT is running */
++	if (XMON_RUNNING_SIGNATURE_CORP == cpu_info[3] &&
++		XMON_RUNNING_SIGNATURE_MON == cpu_info[2]) {
++			return SUCCESS;
++	}
++
++	return ERROR;
++}
++
++static bool ikgt_check_and_set_running_flag(void)
++{
++	uint64_t  status;
++
++	if (!ikgt_first)
++		return ikgt_running;
++
++	ikgt_first = false;
++
++	status = ikgt_running_check();
++
++	if (SUCCESS == status) {
++		ikgt_running = true;
++	} else {
++		ikgt_running = false;
++	}
++
++	return ikgt_running;
++}
++
++static uint64_t make_ikgt_call(uint64_t msg)
++{
++	uint32_t sig = 0;
++
++	/* Check the IKGT running global variable */
++	if (!ikgt_check_and_set_running_flag()) {
++		printk(KERN_ERR "Error: IKGT is not running\n");
++
++		return IKGT_NOT_RUNNING;
++	}
++
++	sig = MON_NATIVE_VMCALL_SIGNATURE;
++
++	return asm_make_vmcall((uint64_t)sig, (uint64_t)VMCALL_IKGT, msg);
++}
++
++uint64_t ikgt_hypercall(uint64_t arg1,
++						uint64_t arg2,
++						uint64_t arg3)
++{
++	ikgt_lib_msg_t msg;
++
++	msg.arg1 = arg1;
++	msg.arg2 = arg2;
++	msg.arg3 = arg3;
++
++	return make_ikgt_call((uint64_t)&msg);
++}
++
+diff --git a/security/ikgt/ikgt_api.h b/security/ikgt/ikgt_api.h
+new file mode 100755
+index 0000000..001dbb9
+--- /dev/null
++++ b/security/ikgt/ikgt_api.h
+@@ -0,0 +1,40 @@
++/*******************************************************************************
++* Copyright (c) 2015 Intel Corporation
++*
++* Licensed under the Apache License, Version 2.0 (the "License");
++* you may not use this file except in compliance with the License.
++* You may obtain a copy of the License at
++*
++*      http://www.apache.org/licenses/LICENSE-2.0
++*
++* Unless required by applicable law or agreed to in writing, software
++* distributed under the License is distributed on an "AS IS" BASIS,
++* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++* See the License for the specific language governing permissions and
++* limitations under the License.
++*******************************************************************************/
++
++#ifndef _IKGT_API_H_
++#define _IKGT_API_H_
++
++#include "common_types.h"
++
++
++/*-------------------------------------------------------*
++*  API      : ikgt_hypercall()
++*  PURPOSE  : Send message to handler
++*  ARGUMENTS: arg1 - message id (see message_id_t)
++*             arg2 - offset into the input buffer
++*             arg3 - offset into the output buffer
++*  RETURN   : uint64_t
++*              SUCCESS (0)
++*              ERROR (1)
++*              IKGT_NOT_RUNNING (2)
++*              GPA of config_info_t structure (others)
++*--------------------------------------------------------*/
++uint64_t ikgt_hypercall(uint64_t arg1,
++						uint64_t arg2,
++						uint64_t arg3);
++
++
++#endif  /* _IKGT_API_H_ */
+diff --git a/security/ikgt/ikgt_handler_api.h b/security/ikgt/ikgt_handler_api.h
+new file mode 100755
+index 0000000..2e624da
+--- /dev/null
++++ b/security/ikgt/ikgt_handler_api.h
+@@ -0,0 +1,241 @@
++/*******************************************************************************
++* Copyright (c) 2015 Intel Corporation
++*
++* Licensed under the Apache License, Version 2.0 (the "License");
++* you may not use this file except in compliance with the License.
++* You may obtain a copy of the License at
++*
++*      http://www.apache.org/licenses/LICENSE-2.0
++*
++* Unless required by applicable law or agreed to in writing, software
++* distributed under the License is distributed on an "AS IS" BASIS,
++* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++* See the License for the specific language governing permissions and
++* limitations under the License.
++*******************************************************************************/
++
++#ifndef _IKGT_HANDLER_API_H_
++#define _IKGT_HANDLER_API_H_
++
++#include "common_types.h"
++#include "ikgt_handler_types.h"
++
++
++#define memset mon_memset
++
++#define memcpy mon_memcpy
++
++/*-------------------------------------------------------*
++*  API      : ikgt_get_vmexit_reason()
++*  USER     : Handler
++*  PURPOSE  : API to get VMEXIT basic reason, qualification and GVA.
++*  ARGUMENTS: struct ikgt_vmexit_reason_t contains VMEXIT reason
++*  RETURNS  : ikgt_status_t (i.e IKGT_STATUS_SUCCESS(0) or  IKGT_STATUS_ERROR(1))
++*--------------------------------------------------------*/
++API ikgt_status_t ikgt_get_vmexit_reason(INOUT ikgt_vmexit_reason_t *reason);
++
++/*
++* Handler utility API
++*/
++API int ikgt_printf(IN const char *format, ...);
++
++/*-------------------------------------------------------*
++*  FUNCTION : ikgt_malloc()
++*  USER     : Handler
++*  PURPOSE  : Allocates contiguous buffer of given size,
++*             filled with zeroes
++*  ARGUMENTS: IN uint32_t size - size of the buffer in bytes.
++*                              size <= 2 KILOBYTE required.
++*  RETURNS  : uint64_t*  address of allocted buffer if OK,
++*             NULL if failed
++*-------------------------------------------------------*/
++API uint64_t *ikgt_malloc(IN uint32_t size);
++
++/*-------------------------------------------------------*
++*  FUNCTION : ikgt_free()
++*  USER     : Handler
++*  PURPOSE  : Release previously allocated buffer allocated
++*             with ikgt_malloc()
++*  ARGUMENTS: IN uint64_t *buff - buffer to be released
++*  RETURNS  : void
++*-------------------------------------------------------*/
++API void ikgt_free(IN uint64_t *buff);
++
++/*-------------------------------------------------------*
++*  API      : ikgt_read_guest_registers()
++*  USER     : Handler
++*  PURPOSE  : Read guest VMCS registers values.
++*  ARGUMENTS: reg - The pointer to struct that contains
++*                       size of the parameter struct,
++*                       number of the register IDs/register values
++*                       array of register IDs and,
++*                       array of register values corresponding to IDs.
++*  RETURNS  : ikgt_status_t (i.e IKGT_STATUS_SUCCESS(0) or
++*                              IKGT_STATUS_ERROR(1))
++*             reg_values - array of guest state register values.
++*--------------------------------------------------------*/
++API ikgt_status_t ikgt_read_guest_registers(ikgt_vmcs_guest_guest_register_t *reg);
++
++/*-------------------------------------------------------*
++*  API      : ikgt_write_guest_registers()
++*  USER     : Handler
++*  PURPOSE  : Write to guest VMCS registers.
++*  ARGUMENTS: reg - The pointer to struct that contains
++*                   size of the parameter struct, number of the
++*                   register IDs/register values array of register
++*                   IDs and, array of register values corresponding
++*                   to IDs.
++*  RETURNS  : ikgt_status_t (i.e IKGT_STATUS_SUCCESS(0) or
++*                              IKGT_STATUS_ERROR(1))
++*--------------------------------------------------------*/
++API ikgt_status_t ikgt_write_guest_registers(ikgt_vmcs_guest_guest_register_t *reg);
++
++/*-------------------------------------------------------*
++*  API      : ikgt_gva_to_gpa()
++*  USER     : Handler
++*  PURPOSE  : Translate GPA to GPA from given CR3 value
++*             If CR3 = 0, use current
++*  ARGUMENTS: IN  Size - size of this struct
++*             IN  GVA - The guest virtual address
++*            IN  cr3 - The CR3 value
++*            OUT GPA - The guest physical address
++*  RETURNS  : ikgt_status_t (i.e IKGT_STATUS_SUCCESS(0) or
++*                              IKGT_STATUS_ERROR(1))
++*--------------------------------------------------------*/
++API ikgt_status_t ikgt_gva_to_gpa(INOUT ikgt_gva_to_gpa_params_t *gva_to_gpa);
++
++/*-------------------------------------------------------*
++*  API      : ikgt_gpa_to_hva()
++*  PURPOSE  : API to return Host Virtual Address mapping of a
++*             Guest Physical memory address.
++*  ARGUMENTS: gpa_to_hva
++*             guest_physical_address - The guest physical address of
++*             the memory location which needs to be accessed
++*             view_handle - Handle of the view in which the translation
++*                          should be done
++*  RETURNS  : ikgt_status_t (i.e IKGT_STATUS_SUCCESS(0) or
++*                              IKGT_STATUS_ERROR(1))
++*             host_virtual_address - Translated host virtual
++*                                  address pointer
++*--------------------------------------------------------*/
++API ikgt_status_t ikgt_gpa_to_hva(INOUT ikgt_gpa_to_hva_params_t *gpa_to_hva);
++
++/*-------------------------------------------------------*
++*  FUNCTION : ikgt_monitor_cpu_events()
++*  PURPOSE  : API to monitor CPU Register events.
++*  ARGUMENTS: Size - size of struct ikgt_cpu_event_params_t
++*             cpu_bitmap - cpu bitmap to be monitored
++*             cpu_reg - cpu register to be monitored
++*             Enable - 1=enable, 0=disable
++*             MoinitorCR0 specified arguments
++*                cr0_mask - CR0 bits that need to be set up
++*             MonitorCR4 specified arguments
++*                cr4_mask - CR4 bits that need to be set up
++*  RETURNS  : ikgt_status_t (i.e IKGT_STATUS_SUCCESS(0) or
++*                              IKGT_STATUS_ERROR(1))
++*-------------------------------------------------------*/
++API ikgt_status_t ikgt_monitor_cpu_events(INOUT ikgt_cpu_event_params_t *monitor_cpu_events);
++
++/*-------------------------------------------------------*
++*  API      : ikgt_monitor_msr_writes()
++*  PURPOSE  : API to monitor MSR writes.
++*  ARGUMENTS: monitor_msr_writes
++*             Enable - 1=enable, 0=disable
++*             num_ids - Number of MSRs
++*             msr_ids[IKGT_MAX_MSR_IDS] - List of MSR Ids.
++*  RETURNS  : ikgt_status_t (i.e IKGT_STATUS_SUCCESS(0) or
++*                              IKGT_STATUS_ERROR(1))
++*             OUT uint32_t ret_val[IKGT_MAX_MSR_IDS] - Success/Failure
++*--------------------------------------------------------*/
++API ikgt_status_t ikgt_monitor_msr_writes(INOUT ikgt_monitor_msr_params_t *monitor_msr_writes);
++
++/*-------------------------------------------------------*
++*  API      : ikgt_update_page_permission()
++*  PURPOSE  : Sets the page monitoring permissions (R/W/X)
++*            in the specified memory monitor view.
++*  ARGUMENTS: params
++*               Handle - The handle of the memory
++*                       monitoring view for which the
++*                       permission is set.
++*               addr_list - Page-Aligned list of
++*                       gpa_addr_info struct with count
++*                       and a status bitmap array.
++*  RETURNS  : ikgt_status_t
++*              IKGT_STATUS_SUCCESS(0)
++*              IKGT_STATUS_ERROR(1)
++*--------------------------------------------------------*/
++API ikgt_status_t ikgt_update_page_permission(INOUT ikgt_update_page_permission_params_t *
++											  params);
++
++/*-------------------------------------------------------*
++*  API      : ikgt_copy_gva_to_hva()
++*  PURPOSE  : Copies the values of size bytes from the location pointed by
++*             gva from guest to the memory block pointed by hva.
++*  ARGUMENTS: params
++*               gva - Pointer to the source of data to be copied.
++*               size -Number of bytes to copy.
++*               hva - Pointer to the destination array where the content is to be copied.
++*  RETURNS  : ikgt_status_t
++*              IKGT_STATUS_SUCCESS(0)
++*              IKGT_STATUS_ERROR(1)
++*--------------------------------------------------------*/
++API ikgt_status_t ikgt_copy_gva_to_hva(gva_t gva, uint32_t size, hva_t hva);
++
++
++/*-------------------------------------------------------*
++*  API      : ikgt_register_handlers()
++*  PURPOSE  :  Responsible for exporting the handler's entry points to ikgt plugin.
++*  ARGUMENTS: params
++*               ikgt_event_handlers - Pointer to an array of entry points.
++*--------------------------------------------------------*/
++API void ikgt_register_handlers(ikgt_event_handlers_t *ikgt_event_handlers);
++
++
++/*-------------------------------------------------------*
++*  API      : ikgt_hva_to_hpa()
++*  PURPOSE  : Get the HPA corresponding to input HVA
++*  ARGUMENTS: hva_to_hpa - Pointer to struct ikgt_hva_to_hpa_params_t
++*  RETURNS  : ikgt_status_t
++*              IKGT_STATUS_SUCCESS(0)
++*              IKGT_STATUS_ERROR(1)
++*--------------------------------------------------------*/
++API ikgt_status_t ikgt_hva_to_hpa(INOUT ikgt_hva_to_hpa_params_t *hva_to_hpa);
++
++/*-------------------------------------------------------*
++*  API      : ikgt_add_gpa_to_hpa_mapping
++*  PURPOSE  : Add GPA to HPA mapping.
++*  ARGUMENTS: view - view id.
++*             gpa - GPA.
++*             hpa - HPA.
++*  RETURNS  : ikgt_status_t (i.e IKGT_STATUS_SUCCESS(0) or
++*                              IKGT_STATUS_ERROR(1))
++*--------------------------------------------------------*/
++API ikgt_status_t ikgt_add_gpa_to_hpa_mapping(uint32_t view, gpa_t gpa, hpa_t hpa);
++
++/*-------------------------------------------------------*
++*  FUNCTION : ikgt_lock_initialize()
++*  PURPOSE  : initialize lock to unlock state
++*  ARGUMENTS: IN lock - lock to be initialized.
++*             Must be allocated by Handler.
++*  RETURNS  : void
++*-------------------------------------------------------*/
++API void ikgt_lock_initialize(ikgt_lock_t *lock);
++
++/*-------------------------------------------------------*
++*  FUNCTION : ikgt_lock_acquire()
++*  PURPOSE  : acquire lock
++*  ARGUMENTS: IN lock - ptr to initialized lock
++*  RETURNS  : void
++*-------------------------------------------------------*/
++API void ikgt_lock_acquire(ikgt_lock_t *lock);
++
++/*-------------------------------------------------------*
++*  FUNCTION : ikgt_lock_release()
++*  PURPOSE  : release lock acquired in ikgt_lock_acquire()
++*  ARGUMENTS: IN lock - ptr to initialized lock
++*  RETURNS  : void
++*-------------------------------------------------------*/
++API void ikgt_lock_release(ikgt_lock_t *lock);
++
++
++#endif  /* _IKGT_HANDLER_API_H_ */
+diff --git a/security/ikgt/ikgt_handler_export.h b/security/ikgt/ikgt_handler_export.h
+new file mode 100755
+index 0000000..7c89b12
+--- /dev/null
++++ b/security/ikgt/ikgt_handler_export.h
+@@ -0,0 +1,26 @@
++/*******************************************************************************
++* Copyright (c) 2015 Intel Corporation
++*
++* Licensed under the Apache License, Version 2.0 (the "License");
++* you may not use this file except in compliance with the License.
++* You may obtain a copy of the License at
++*
++*      http://www.apache.org/licenses/LICENSE-2.0
++*
++* Unless required by applicable law or agreed to in writing, software
++* distributed under the License is distributed on an "AS IS" BASIS,
++* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++* See the License for the specific language governing permissions and
++* limitations under the License.
++*******************************************************************************/
++
++#ifndef _IKGT_HANDLER_EXPORT_H_
++#define _IKGT_HANDLER_EXPORT_H_
++
++#include "ikgt_handler_types.h"
++
++/* API expected to be implemented by the Handler */
++
++boolean_t handler_initialize(uint16_t num_of_cpus);
++
++#endif  /* _IKGT_HANDLER_EXPORT_H_ */
+diff --git a/security/ikgt/ikgt_handler_types.h b/security/ikgt/ikgt_handler_types.h
+new file mode 100755
+index 0000000..39c0962
+--- /dev/null
++++ b/security/ikgt/ikgt_handler_types.h
+@@ -0,0 +1,434 @@
++/*******************************************************************************
++* Copyright (c) 2015 Intel Corporation
++*
++* Licensed under the Apache License, Version 2.0 (the "License");
++* you may not use this file except in compliance with the License.
++* You may obtain a copy of the License at
++*
++*      http://www.apache.org/licenses/LICENSE-2.0
++*
++* Unless required by applicable law or agreed to in writing, software
++* distributed under the License is distributed on an "AS IS" BASIS,
++* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++* See the License for the specific language governing permissions and
++* limitations under the License.
++*******************************************************************************/
++
++#ifndef _IKGT_HANDLER_TYPES_H_
++#define _IKGT_HANDLER_TYPES_H_
++
++#include "common_types.h"
++
++#define IN
++#define OUT
++#define INOUT
++#define CALLBACK
++#define API
++
++#define DEFAULT_VIEW_HANDLE  0                  /* Base View */
++#define MAX_NUM_VIEWS        1   /* Maximum supported number of normal views */
++#define UNSPECIFIED_VIEW_HANDLE MAX_NUM_VIEWS   /* Used when view creation failed */
++#define DUMMY_VIEW_BASE     (MAX_NUM_VIEWS + DEFAULT_VIEW_HANDLE)
++
++#define IKGT_MALLOC_MAX_SIZE 2040               /* In bytes */
++#define IKGT_MAX_MSR_IDS     50
++
++#define HIGHEST_ACCEPTABLE_PHYSICAL_ADDRESS 0xFFFFFFFFFFFFFFFF
++
++typedef uint64_t ikgt_mem_view_handle_t;
++
++typedef enum {
++	IKGT_STATUS_SUCCESS = 0,
++	IKGT_STATUS_ERROR,
++	IKGT_ALLOCATE_FAILED,
++	IKGT_BAD_PARAMS,
++} ikgt_status_t;
++
++typedef struct {
++	uint64_t	ia32_reg_rip;
++	uint64_t	ia32_reg_rflags;
++	uint64_t	vmcs_exit_info_instruction_length;
++} ikgt_event_vmcs_guest_state_t;
++
++typedef enum {
++	IA32_GP_RAX = 0,
++	IA32_GP_RBX,
++	IA32_GP_RCX,
++	IA32_GP_RDX,
++	IA32_GP_RDI,
++	IA32_GP_RSI,
++	IA32_GP_RBP,
++	IA32_GP_RSP,
++	IA32_GP_R8,
++	IA32_GP_R9,
++	IA32_GP_R10,
++	IA32_GP_R11,
++	IA32_GP_R12,
++	IA32_GP_R13,
++	IA32_GP_R14,
++	IA32_GP_R15,
++	VMCS_GUEST_STATE_CR0,
++	VMCS_GUEST_STATE_CR3,
++	VMCS_GUEST_STATE_CR4,
++	VMCS_GUEST_STATE_DR7,
++	VMCS_GUEST_STATE_ES_SELECTOR,
++	VMCS_GUEST_STATE_ES_BASE,
++	VMCS_GUEST_STATE_ES_LIMIT,
++	VMCS_GUEST_STATE_ES_AR,
++	VMCS_GUEST_STATE_CS_SELECTOR,
++	VMCS_GUEST_STATE_CS_BASE,
++	VMCS_GUEST_STATE_CS_LIMIT,
++	VMCS_GUEST_STATE_CS_AR,
++	VMCS_GUEST_STATE_SS_SELECTOR,
++	VMCS_GUEST_STATE_SS_BASE,
++	VMCS_GUEST_STATE_SS_LIMIT,
++	VMCS_GUEST_STATE_SS_AR,
++	VMCS_GUEST_STATE_DS_SELECTOR,
++	VMCS_GUEST_STATE_DS_BASE,
++	VMCS_GUEST_STATE_DS_LIMIT,
++	VMCS_GUEST_STATE_DS_AR,
++	VMCS_GUEST_STATE_FS_SELECTOR,
++	VMCS_GUEST_STATE_FS_BASE,
++	VMCS_GUEST_STATE_FS_LIMIT,
++	VMCS_GUEST_STATE_FS_AR,
++	VMCS_GUEST_STATE_GS_SELECTOR,
++	VMCS_GUEST_STATE_GS_BASE,
++	VMCS_GUEST_STATE_GS_LIMIT,
++	VMCS_GUEST_STATE_GS_AR,
++	VMCS_GUEST_STATE_LDTR_SELECTOR,
++	VMCS_GUEST_STATE_LDTR_BASE,
++	VMCS_GUEST_STATE_LDTR_LIMIT,
++	VMCS_GUEST_STATE_LDTR_AR,
++	VMCS_GUEST_STATE_TR_SELECTOR,
++	VMCS_GUEST_STATE_TR_BASE,
++	VMCS_GUEST_STATE_TR_LIMIT,
++	VMCS_GUEST_STATE_TR_AR,
++	VMCS_GUEST_STATE_GDTR_BASE,
++	VMCS_GUEST_STATE_GDTR_LIMIT,
++	VMCS_GUEST_STATE_IDTR_BASE,
++	VMCS_GUEST_STATE_IDTR_LIMIT,
++	VMCS_GUEST_STATE_PEND_DBE,
++	VMCS_GUEST_STATE_WORKING_VMCS_PTR,
++	VMCS_GUEST_STATE_DEBUG_CONTROL,
++	VMCS_GUEST_STATE_INTERRUPTIBILITY,
++	VMCS_GUEST_STATE_SLEEP_STATE,
++	VMCS_GUEST_STATE_SMBASE,
++	VMCS_GUEST_STATE_SYSENTER_CS,
++	VMCS_GUEST_STATE_SYSENTER_ESP,
++	VMCS_GUEST_STATE_SYSENTER_EIP,
++	VMCS_GUEST_STATE_PAT,
++	VMCS_GUEST_STATE_EFER,
++	VMCS_GUEST_STATE_PDPTR0,
++	VMCS_GUEST_STATE_PDPTR1,
++	VMCS_GUEST_STATE_PDPTR2,
++	VMCS_GUEST_STATE_PDPTR3,
++	VMCS_STATE_PREEMPTION_TIMER,
++	VMCS_STATE_GUEST_UG_SUPPORT,
++	/* Only valid for 64-bit, will return undefined value in 32-bit */
++	VMCS_GUEST_STATE_CR8,
++	VMCS_GUEST_STATE_RFLAGS,
++	VMCS_GUEST_STATE_RIP,
++	NUM_OF_VMCS_GUEST_STATE_REGS
++} ikgt_vmcs_guest_state_reg_id_t;
++
++typedef enum {
++	IKGT_CPU_REG_RAX = 0,
++	IKGT_CPU_REG_RBX,
++	IKGT_CPU_REG_RCX,
++	IKGT_CPU_REG_RDX,
++	IKGT_CPU_REG_RDI,
++	IKGT_CPU_REG_RSI,
++	IKGT_CPU_REG_RBP,
++	IKGT_CPU_REG_RSP,
++	IKGT_CPU_REG_R8,
++	IKGT_CPU_REG_R9,
++	IKGT_CPU_REG_R10,
++	IKGT_CPU_REG_R11,
++	IKGT_CPU_REG_R12,
++	IKGT_CPU_REG_R13,
++	IKGT_CPU_REG_R14,
++	IKGT_CPU_REG_R15,
++	IKGT_CPU_REG_CR0,
++	IKGT_CPU_REG_CR3,
++	IKGT_CPU_REG_CR4,
++	IKGT_CPU_REG_IDTR,
++	IKGT_CPU_REG_GDTR,
++	IKGT_CPU_REG_LDTR,
++	IKGT_CPU_REG_TR,
++	IKGT_CPU_REG_DR,        /* any dbg reg */
++	IKGT_CPU_REG_SR,        /* any seg reg */
++	IKGT_CPU_REG_MSR,       /* Any MSR. Look in ECX for MSR Id. */
++	IKGT_CPU_REG_UNKNOWN
++} ikgt_cpu_reg_t;
++
++typedef enum {
++	IKGT_CPU_EVENT_OP_REG,
++	IKGT_CPU_EVENT_OP_MEM,
++	IKGT_CPU_EVENT_OP_MSR,
++	IKGT_CPU_EVENT_OP_FAST_VIEW_SWITCH,
++	IKGT_CPU_EVENT_OP_CPUID
++} ikgt_cpu_event_op_t;
++
++typedef enum {
++	IKGT_CPU_EVENT_DIRN_SRC,
++	IKGT_CPU_EVENT_DIRN_DST
++} ikgt_cpu_event_dirn_t;
++
++typedef struct {
++	IN ikgt_cpu_event_op_t		optype;
++	IN ikgt_cpu_event_dirn_t	opdirn;
++	IN ikgt_cpu_reg_t		event_reg;      /* The register to which this event pertains */
++	IN ikgt_cpu_reg_t		operand_reg;    /* ifoptype==CPU_EVENT_OP_REG */
++	IN uint64_t			operand_gva;    /* if optype==CPU_EVENT_OP_MEM */
++	IN uint64_t			operand_gpa;    /* if optype==CPU_EVENT_OP_MEM */
++	INOUT uint64_t		cpuid_params;   /* if optype==CPU_EVENT_OP_CPUID */
++} ikgt_cpu_event_info_t;
++
++typedef union {
++	struct {
++		uint32_t readable:1, writable:1, executable:1, suppress_ve:1, reserved:28;
++	} bit;
++	/* Refer IA developer manual 3B for valid bit combinations */
++	/* Invalid value results in EPT misconfiguration error */
++	uint32_t all_bits;
++} ikgt_page_perms_t;
++
++typedef struct {
++	IN uint64_t	size;
++	IN uint64_t	guest_virtual_address;
++	IN uint64_t	cr3;
++	OUT uint64_t	guest_physical_address;
++} ikgt_gva_to_gpa_params_t;
++
++typedef struct {
++	IN ikgt_mem_view_handle_t	view_handle;
++	IN uint64_t			guest_physical_address;
++	OUT uint64_t		host_virtual_address;
++} ikgt_gpa_to_hva_params_t;
++
++typedef struct {
++	IN uint64_t	size;
++	IN uint64_t	host_virtual_address;
++	OUT uint64_t	host_physical_address;
++} ikgt_hva_to_hpa_params_t;
++
++typedef struct {
++	IN ikgt_mem_view_handle_t	handle;
++	/* source of access is in VMCS_GUEST_RIP in ikgt_event_vmcs_guest_state_t */
++	IN uint64_t			destination_gva;
++	IN uint64_t			destination_gpa;
++	IN ikgt_page_perms_t		attempt;
++	IN ikgt_page_perms_t		perms;
++} ikgt_mem_event_info_t;
++
++typedef struct {
++	/* 64bit aligned */
++	struct {
++		/* IO port address (from 0 to 65535) */
++		IN uint32_t	port_id:16;
++		/* 1= 1-byte; 2= 2-byte; 4= 4-byte; others not used */
++		IN uint32_t	port_size:3;
++		/* 0= OUT or OUTS (write); 1= IN or INS (read) */
++		IN uint32_t	port_access:1;
++		/* String instruction (0 = not string; 1 = string)  */
++		IN uint32_t	str_instr:1;
++		/* REP prefixed (0 = not REP; 1 = REP)  */
++		IN uint32_t	rep_prefix:1;
++		/* 0 = monitored only by Handler/IB;
++		* 1 = also monitored by MON internally
++		* Further extension to solve this owner conflict.
++		* Currently, it is always ZERO */
++		IN uint32_t	io_owner:1;
++		IN uint32_t	reserved0:9; /* not used */
++		/* valid only if rep_prefix = 1, rep count (in guest ecx)*/
++		IN uint32_t	rep_count:32;
++	} instr_info;
++
++	/* This field str_data_gva below is valid for IO string instructions */
++	/* (INS/OUTS), points to the memory location of data buffer, which */
++	/* contains the value that guest OS attempted to read/write. */
++
++	/* For IN/OUT instruction, set as NULL since the data is in */
++	/* guest register AL, AX, or EAX, depending on port_size */
++
++	/* Notes: */
++	/* 1).The length of this pointer is calculated as: */
++	/*    if rep_prefix=1, then rep_count*port_size */
++	/*    if rep_prefix=0, then port_size */
++	/* 2).If rep_prefix=1 (means REP OUTS/INS),then the direction of */
++	/*    this field depends on guest RFLAGS.DF value: */
++	/*    if DF=1, decremented by port_size of bytes for each iteration; */
++	/*    if DF=0, incremented by port_size of bytes. */
++	/* 3).It is a GVA address, may cross the page boundary, and */
++	/*    even non-contiguous guest physical page. */
++	/*  */
++	IN uint64_t str_data_gva; /* gva pointer to write/read data */
++} ikgt_io_event_info_t;
++
++typedef enum {
++	IKGT_EVENT_TYPE_CPU,
++	IKGT_EVENT_TYPE_MEM,
++	IKGT_EVENT_TYPE_MSG,
++} ikgt_event_type_t;
++
++typedef enum {
++	IKGT_EVENT_RESPONSE_ALLOW = 0,
++	IKGT_EVENT_RESPONSE_REDIRECT,
++
++	IKGT_EVENT_RESPONSE_DISPATCHIB,
++	IKGT_EVENT_RESPONSE_RETRY,
++
++	IKGT_EVENT_RESPONSE_SINGLESTEP,
++
++	IKGT_EVENT_RESPONSE_EXCEPTION,
++
++	IKGT_EVENT_RESPONSE_UNSPECIFIED = 1023
++} ikgt_event_response_t;
++
++typedef struct {
++	uint32_t	reason; /* basic reason of VMEXIT */
++	uint32_t	padding;
++	uint64_t	qualification;
++	uint64_t	gva; /* GVA valid only in memory events */
++} ikgt_vmexit_reason_t;
++
++typedef struct {
++	IN ikgt_event_type_t	type;
++	IN uint64_t				thread_id;
++	IN ikgt_event_vmcs_guest_state_t	vmcs_guest_state;
++	IN uint64_t				event_specific_data; /* Pointer to event specific structure */
++	OUT ikgt_event_response_t		response;
++	IN uint32_t				view_handle;
++	OUT uint64_t			event_specific_response;
++	/* Pointer to event specific structure or data */
++} ikgt_event_info_t;
++
++/*  */
++/* Union used to specify IA-32 Control Register #0 Mask */
++/*  */
++typedef union {
++	struct {
++		uint32_t	pe:1;         /* Bit 0: Protection Enable */
++		uint32_t	mp:1;         /* Bit 1: Monitor Coprocessor */
++		uint32_t	em:1;         /* Bit 2: Emulation */
++		uint32_t	ts:1;         /* Bit 3: Task Switched */
++		uint32_t	et:1;         /* Bit 4: Extension Type */
++		uint32_t	ne:1;         /* Bit 5: Numeric Error */
++		uint32_t	bit06_15:10;  /* Bit06_15: reserved Bits */
++		uint32_t	wp:1;         /* Bit 16: Write Protect */
++		uint32_t	bit17:1;      /* Bit17: reserved Bit */
++		uint32_t	am:1;         /* Bit 18: Alignment Mask */
++		uint32_t	bit19_28:10;  /* Bit19_28: reserved Bits */
++		uint32_t	nw:1;         /* Bit 29: Not Write-through */
++		uint32_t	cd:1;         /* Bit 30: Cache Disable */
++		uint32_t	pg:1;         /* Bit 31: Paging */
++		uint32_t	bit32_63;       /* Bit32_63: reserved Bits */
++	} bits;
++	uint64_t uint64;
++} ikgt_cr0_mask_t;
++
++/*  */
++/* Union used to specify IA-32 Control Register #4 Mask */
++/*  */
++typedef union {
++	struct {
++		uint32_t	vme:1;        /* Bit 0: V86 Mode Extensions */
++		uint32_t	pvi:1;        /* Bit 1: Protected-Mode Virtual Interrupts */
++		uint32_t	tsd:1;        /* Bit 2: Time Stamp Disable */
++		uint32_t	de:1;         /* Bit 3: Debugging Extensions */
++		uint32_t	pse:1;        /* Bit 4: Page Size Extensions */
++		uint32_t	pae:1;        /* Bit 5: Physical Address Extension */
++		uint32_t	mce:1;        /* Bit 6: Machine-Check Enable */
++		uint32_t	pge:1;        /* Bit 7: Page Global Enable */
++		uint32_t	pce:1;        /* Bit 8: Performance-Monitoring Counter Enable */
++		uint32_t	osfxsr:1;     /* Bit 9: OS Support for FXSAVE/FXSTOR */
++		uint32_t	osxmmexcpt:1; /* Bit 10: OS Support for Unmasked SIMD FP Ex. */
++		uint32_t	bit11_12:2;   /* Bit11_12: reserved Bits */
++		uint32_t	vmxe:1;       /* Bit 13: VMX-Enable Bit */
++		uint32_t	smxe:1;       /* Bit 14: SMX-Enable Bit */
++		uint32_t	bit15_16:2;   /* Bit15_16: reserved Bits */
++		uint32_t	pcide:1;      /* Bit 17: PCID-Enable Bit */
++		uint32_t	osxsave:1;    /* Bit 18: XSAVE and Processor Ext. Stat-Enb Bit */
++		uint32_t	bit19:1;      /* Bit 19: reserved Bit */
++		uint32_t	smep:1;       /* Bit 20: Supervisor Mode Execution Prevention */
++		uint32_t	bit21_31:11;  /* Bit21_31: reserved Bits */
++		uint32_t	bit32_63;       /* Bit32_63: reserved Bits */
++	} bits;
++	uint64_t uint64;
++} ikgt_cr4_mask_t;
++
++/* Union for monitoring CRx bits */
++typedef union {
++	ikgt_cr0_mask_t cr0;            /* CR0 bits that need to be set up */
++	ikgt_cr4_mask_t cr4;            /* CR4 bits that need to be set up*/
++} ikgt_crx_mask_t;
++
++typedef struct {
++	IN uint64_t		size;
++	IN uint64_t		cpu_bitmap[CPU_BITMAP_MAX];
++
++	/* valid cpu registers to be monitored are: */
++	/* CR0, CR3, CR4, DR, IDTR, GDTR, LDTR, TR */
++	IN ikgt_cpu_reg_t	cpu_reg;
++
++	IN uint32_t		enable;         /* 1=enable, 0=disable */
++	IN ikgt_crx_mask_t	crx_mask;       /* Mask for CR0 and CR4 monitoring */
++} ikgt_cpu_event_params_t;
++
++#define GUEST_REGISTER_MAX_NUM     50
++
++typedef struct {
++	IN uint64_t				size;
++	IN uint32_t				num;
++	uint8_t					padding[4];
++	IN ikgt_vmcs_guest_state_reg_id_t	reg_ids[GUEST_REGISTER_MAX_NUM];
++	INOUT uint64_t				reg_values[GUEST_REGISTER_MAX_NUM];
++} ikgt_vmcs_guest_guest_register_t;
++
++typedef struct {
++	IN uint64_t		gpa;
++	IN ikgt_page_perms_t	perms;
++	IN uint8_t		padding1[4];
++	IN uint64_t		gva;
++} guest_addr_info_t;
++
++#define IKGT_ADDRINFO_MAX_COUNT   100
++#define IKGT_ADDRINFO_MAX_RET     NUM_OF_64BIT_ARRAY(IKGT_ADDRINFO_MAX_COUNT)
++typedef struct {
++	IN uint32_t		count;
++	IN uint8_t		padding[4];
++	IN guest_addr_info_t	item[IKGT_ADDRINFO_MAX_COUNT];
++	OUT uint64_t		return_value[IKGT_ADDRINFO_MAX_RET];
++} guest_addr_list_t;
++
++typedef struct {
++	IN ikgt_mem_view_handle_t	handle;
++	IN guest_addr_list_t		addr_list;
++} ikgt_update_page_permission_params_t;
++
++typedef struct {
++	uint32_t	enable;
++	uint32_t	num_ids;
++	IN uint32_t	msr_ids[IKGT_MAX_MSR_IDS];
++	OUT uint32_t	ret_val[IKGT_MAX_MSR_IDS];
++} ikgt_monitor_msr_params_t;
++
++typedef void (*memory_event_handler_t)(ikgt_event_info_t *event_info);
++typedef void (*cpu_event_handler_t)(ikgt_event_info_t *event_info);
++typedef uint64_t (*message_event_handler_t)(ikgt_event_info_t *event_info,
++											uint64_t arg1, uint64_t arg2, uint64_t arg3);
++
++typedef struct {
++	memory_event_handler_t memory_event_handler;
++	cpu_event_handler_t cpu_event_handler;
++	message_event_handler_t	message_event_handler;
++} ikgt_event_handlers_t;
++
++typedef struct {
++	volatile uint32_t	uint32_lock;
++	volatile uint16_t	owner_cpu_id;
++	char			padding[2];
++} ikgt_lock_t;
++
++
++#endif  /* IKGT_HANDLER_TYPES_H_ */
+diff --git a/security/ikgt/ikgt_vmx_if.h b/security/ikgt/ikgt_vmx_if.h
+new file mode 100755
+index 0000000..801c702
+--- /dev/null
++++ b/security/ikgt/ikgt_vmx_if.h
+@@ -0,0 +1,35 @@
++/*******************************************************************************
++* Copyright (c) 2015 Intel Corporation
++*
++* Licensed under the Apache License, Version 2.0 (the "License");
++* you may not use this file except in compliance with the License.
++* You may obtain a copy of the License at
++*
++*      http://www.apache.org/licenses/LICENSE-2.0
++*
++* Unless required by applicable law or agreed to in writing, software
++* distributed under the License is distributed on an "AS IS" BASIS,
++* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++* See the License for the specific language governing permissions and
++* limitations under the License.
++*******************************************************************************/
++
++#ifndef _IKGT_VMX_IF_H_
++#define _IKGT_VMX_IF_H_
++
++#define VMCALL_IKGT 12
++
++#define MON_NATIVE_VMCALL_SIGNATURE                                            \
++	(((uint32_t)'$' << 24)                                                     \
++	| ((uint32_t)'i' << 16)                                                     \
++	| ((uint32_t)'M' << 8)                                                      \
++	| ((uint32_t)'@' << 0)                                                      \
++	)
++
++typedef struct {
++	uint64_t arg1;
++	uint64_t arg2;
++	uint64_t arg3;
++} ikgt_lib_msg_t;
++
++#endif  /* _IKGT_VMX_IF_H_ */
+diff --git a/security/ikgt/log.c b/security/ikgt/log.c
+new file mode 100755
+index 0000000..846da7e
+--- /dev/null
++++ b/security/ikgt/log.c
+@@ -0,0 +1,229 @@
++/*
++* This is an example ikgt usage driver.
++* Copyright (c) 2015, Intel Corporation.
++*
++* This program is free software; you can redistribute it and/or modify it
++* under the terms and conditions of the GNU General Public License,
++* version 2, as published by the Free Software Foundation.
++*
++* This program is distributed in the hope it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++* more details.
++*/
++
++#include <linux/module.h>
++
++#include "common.h"
++#include "policy_common.h"
++#include "log.h"
++
++
++/* last logging data sequence number per CPU */
++static uint64_t *log_record_seq_num;
++
++/* variable used to form one log record as string for temporary */
++#define MAX_LOG_RECORD_LEN 256
++
++static uint32_t num_of_cpus;
++
++static log_entry_t *log_data_gva;
++
++#define MAX_SENTINEL_SIZE  64
++#define MAX_ELLIPSIS_SIZE  4
++#define MAX_CONFIGFS_PAGE_SIZE  (PAGE_4KB - MAX_SENTINEL_SIZE - MAX_ELLIPSIS_SIZE - 1)
++
++static int dump_log(char *configfs_page);
++static ssize_t log_children_show(struct config_item *item, char *page)
++{
++		return dump_log(page);
++}
++
++
++static struct configfs_attribute log_children_attr_description = {
++	.ca_owner	= THIS_MODULE,
++	.ca_name	= "log.txt",
++	.ca_mode	= S_IRUGO,
++	.show       = log_children_show,
++};
++
++static struct configfs_attribute *log_children_attrs[] = {
++	&log_children_attr_description,
++	NULL,
++};
++
++
++static void log_children_release(struct config_item *item)
++{
++	kfree(to_node(item));
++}
++
++static struct configfs_item_operations log_children_item_ops = {
++	.release	= log_children_release,
++};
++
++static struct config_item_type log_children_type = {
++	.ct_item_ops	= &log_children_item_ops,
++	.ct_attrs	= log_children_attrs,
++	.ct_owner	= THIS_MODULE,
++};
++
++struct config_item_type *get_log_children_type(void)
++{
++	return &log_children_type;
++}
++
++/* Return: 1=configfs_page is full, 0=configfs_page is not full */
++static int log_add_msg_to_configfs(char *configfs_page, char *msg,
++								   int msglen, int *offset)
++{
++	int copy;
++
++	BUG_ON((*offset) >= (MAX_CONFIGFS_PAGE_SIZE - 1));
++
++	copy = min(msglen, MAX_CONFIGFS_PAGE_SIZE - 1 - *offset);
++
++	strncpy(configfs_page + *offset, msg, copy);
++	*offset += copy;
++
++	if (copy != msglen) {
++		int n;
++
++		n = min(4, MAX_ELLIPSIS_SIZE);
++		strncpy(configfs_page + *offset, "...\n", n);
++		*offset += n;
++		copy += n;
++
++		return 1;
++	}
++
++	if (*offset >= (MAX_CONFIGFS_PAGE_SIZE - 1))
++		return 1;
++
++	return 0;
++}
++
++/*
++*   IN cpu_log_buffer: start of the per cpu log buffer
++*   IN cpu_index: cpu index
++*   OUTPUT results: event contents copy to
++*   RETURN: number of logs actually copied
++*/
++uint32_t read_logs(log_entry_t *cpu_log_buffer, uint32_t cpu_index, log_entry_t results[])
++{
++	log_entry_t *entry;
++	uint32_t nlogs = 0;
++	int i;
++	uint64_t start;
++
++	start = log_record_seq_num[cpu_index];
++
++	for (i = 0; i < LOGS_PER_CPU; i++) {
++		entry = &cpu_log_buffer[i];
++		if (entry->seq_num > start) {
++			results[nlogs].seq_num = entry->seq_num;
++			strncpy(results[nlogs].message, entry->message, LOG_MESSAGE_SIZE);
++			nlogs++;
++
++			if (entry->seq_num > log_record_seq_num[cpu_index])
++				log_record_seq_num[cpu_index] = entry->seq_num;
++		}
++	}
++
++	return nlogs;
++}
++
++static int dump_log(char *configfs_page)
++{
++	uint32_t cpu_index = 0;
++	uint32_t log_index = 0;
++	log_entry_t *cpu_log_buffer;
++	int offset = 0;
++	int n, full = 0;
++	char *sz_log_record;
++	uint32_t nlogs;
++	uint32_t logs_dumped = 0;
++	log_entry_t *results = NULL;
++	log_entry_t *entry;
++
++	if (!configfs_page)
++		return 0;
++
++	if (NULL == log_record_seq_num)
++		return 0;
++
++	sz_log_record = (char *)kzalloc(MAX_LOG_RECORD_LEN + 1, GFP_KERNEL);
++	if (NULL == sz_log_record)
++		return 0;
++
++	results = (log_entry_t *)kzalloc(LOGS_PER_CPU * sizeof(log_entry_t), GFP_KERNEL);
++	if (NULL == results) {
++		kfree(sz_log_record);
++		return 0;
++	}
++
++	for (cpu_index = 0; cpu_index < num_of_cpus; cpu_index++) {
++
++		cpu_log_buffer = get_cpu_log_buffer_start(log_data_gva, cpu_index);
++
++		nlogs = read_logs(cpu_log_buffer, cpu_index, results);
++
++		for (log_index = 0; log_index < nlogs; log_index++) {
++			entry = &results[log_index];
++			n = snprintf(sz_log_record, MAX_LOG_RECORD_LEN, "cpu=%d, sequence-number=%llu, %s\n", cpu_index, entry->seq_num, entry->message);
++
++			full = log_add_msg_to_configfs(configfs_page, sz_log_record, n, &offset);
++			if (full) {
++				log_record_seq_num[cpu_index] = entry->seq_num;
++				break;
++			}
++			logs_dumped++;
++		}
++		if (full)
++			break;
++	}
++
++	n = snprintf(sz_log_record, MAX_SENTINEL_SIZE - 1, "offset=%u, logs-dumped=%u, full=%d\nEOF\n", offset, logs_dumped, full);
++	strncpy(configfs_page + offset, sz_log_record, n);
++	offset += n;
++
++	kfree(sz_log_record);
++	kfree(results);
++
++	return offset;
++}
++
++void init_log(char *log_addr)
++{
++	if (0 == log_addr)
++		return;
++
++	num_of_cpus = num_online_cpus();
++
++	log_record_seq_num = kzalloc(num_of_cpus * sizeof(uint64_t), GFP_KERNEL);
++	if (NULL == log_record_seq_num)
++		return;
++
++	log_data_gva = (log_entry_t *)log_addr;
++
++	PRINTK_INFO("malloc log data pages at %p\n", log_addr);
++}
++
++#ifdef DEBUG
++void test_log(void)
++{
++	log_entry_t *cpu_log_buffer;
++	char *p = (char *)log_data_gva;
++	uint32_t size ;
++
++	cpu_log_buffer = get_cpu_log_buffer_start(log_data_gva, 0);
++
++	size = num_of_cpus * LOG_PAGES_PER_CPU * PAGE_4KB;
++	p[size - 1] = 'E';
++
++	PRINTK_INFO("After: test_log=0x%lx, size=%u bytes\n", (unsigned long)test_log, size);
++	PRINTK_INFO("After: p+size-1=%p\n", p + size - 1);
++	PRINTK_INFO("After: p[size-1]=%c\n", p[size - 1]);
++}
++#endif
++
+diff --git a/security/ikgt/log.h b/security/ikgt/log.h
+new file mode 100755
+index 0000000..8cb1e52
+--- /dev/null
++++ b/security/ikgt/log.h
+@@ -0,0 +1,22 @@
++/*
++* This is an example ikgt usage driver.
++* Copyright (c) 2015, Intel Corporation.
++*
++* This program is free software; you can redistribute it and/or modify it
++* under the terms and conditions of the GNU General Public License,
++* version 2, as published by the Free Software Foundation.
++*
++* This program is distributed in the hope it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++* more details.
++*/
++
++#ifndef _LOG_H
++#define _LOG_H
++
++void init_log(char *log_addr);
++
++void test_log(void);
++
++#endif /* _LOG_H */
+diff --git a/security/ikgt/main.c b/security/ikgt/main.c
+new file mode 100755
+index 0000000..1035794
+--- /dev/null
++++ b/security/ikgt/main.c
+@@ -0,0 +1,153 @@
++/*
++* This is an example ikgt usage driver.
++* Copyright (c) 2015, Intel Corporation.
++*
++* This program is free software; you can redistribute it and/or modify it
++* under the terms and conditions of the GNU General Public License,
++* version 2, as published by the Free Software Foundation.
++*
++* This program is distributed in the hope it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++* more details.
++*/
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++
++#include "ikgt_api.h"
++#include "common.h"
++#include "configfs_setup.h"
++#include "log.h"
++#include "debug.h"
++#include "alloc.h"
++
++static char *g_in_va_base;
++static char *g_out_va_base;
++static char *g_log_va_base;
++
++
++static void uninit_shared_regions(void);
++
++static bool init_shared_regions(void)
++{
++	uint64_t config_pa;
++	config_info_t *ikgt_config = NULL;
++
++	BUILD_BUG_ON(sizeof(config_info_t) > PAGES_TO_BYTES(MAX_CONFIG_INFO_PAGES));
++	BUILD_BUG_ON(sizeof(policy_message_t) > PAGES_TO_BYTES(MAX_IN_ADDR_PAGES));
++
++	config_pa = ikgt_hypercall(POLICY_GET_CONFIG, 0, 0);
++	if (IKGT_NOT_RUNNING == config_pa) {
++		PRINTK_ERROR("IKGT is not running\n");
++		return false;
++	}
++
++	PRINTK_INFO("%s: config_pa=0x%llx\n", __func__, config_pa);
++
++	ikgt_config = (config_info_t *)ioremap(config_pa, PAGES_TO_BYTES(MAX_CONFIG_INFO_PAGES));
++	if (NULL == ikgt_config) {
++		PRINTK_ERROR("ioremap failed\n");
++		return false;
++	}
++
++	PRINTK_INFO("version=0x%llx\n", ikgt_config->ver.uint64);
++
++	g_in_va_base = (char *)ioremap(ikgt_config->in_pa, ikgt_config->in_size);
++	if (0 == g_in_va_base) {
++		PRINTK_ERROR("failed to ioremap in_pa 0x%llx\n", ikgt_config->in_pa);
++		goto err_out;
++	}
++
++	g_out_va_base = (char *)ioremap(ikgt_config->out_pa, ikgt_config->out_size);
++	if (0 == g_out_va_base) {
++		PRINTK_ERROR("failed to ioremap out_pa 0x%llx\n", ikgt_config->out_pa);
++		goto err_out;
++	}
++
++	g_log_va_base = (char *)ioremap(ikgt_config->log_pa, ikgt_config->log_size);
++	if (0 == g_log_va_base) {
++		PRINTK_ERROR("failed to ioremap log_pa 0x%llx\n", ikgt_config->log_pa);
++		goto err_out;
++	}
++
++	PRINTK_INFO("in_pa=0x%llx\n", ikgt_config->in_pa);
++	PRINTK_INFO("in_va=%p\n", g_in_va_base);
++	PRINTK_INFO("in_size=%llu\n", ikgt_config->in_size);
++
++	PRINTK_INFO("out_pa=0x%llx\n", ikgt_config->out_pa);
++	PRINTK_INFO("out_va=%p\n", g_out_va_base);
++	PRINTK_INFO("out_size=%llu\n", ikgt_config->out_size);
++
++	PRINTK_INFO("log_pa=0x%llx\n", ikgt_config->log_pa);
++	PRINTK_INFO("log_va=%p\n", g_log_va_base);
++	PRINTK_INFO("log_size=%llu\n", ikgt_config->log_size);
++
++	init_in_buf(g_in_va_base, ikgt_config->in_size);
++	init_out_buf(g_out_va_base, ikgt_config->out_size);
++	init_log_buf(g_log_va_base, ikgt_config->log_size);
++
++	iounmap((void __iomem *)ikgt_config);
++
++	return true;
++
++err_out:
++	uninit_shared_regions();
++
++	if (ikgt_config) {
++		iounmap((void __iomem *)ikgt_config);
++	}
++
++	return false;
++}
++
++static void uninit_shared_regions(void)
++{
++	if (g_in_va_base)
++		iounmap((void __iomem *)g_in_va_base);
++	g_in_va_base = NULL;
++
++	if (g_out_va_base)
++		iounmap((void __iomem *)g_out_va_base);
++	g_out_va_base = NULL;
++
++	if (g_log_va_base)
++		iounmap((void __iomem *)g_log_va_base);
++	g_log_va_base = NULL;
++}
++
++static int __init init_agent(void)
++{
++	PRINTK_INFO("%s\n", __func__);
++
++	if (!init_shared_regions()) {
++		PRINTK_ERROR("init_shared_regions failed\n");
++		return 1;
++	}
++
++	init_log(get_alloc_info_log_addr());
++
++#ifdef DEBUG
++	init_debug();
++#endif
++
++	init_configfs_setup();
++
++	return 0;
++}
++
++static void __exit exit_agent(void)
++{
++	uninit_shared_regions();
++
++#ifdef DEBUG
++	uninit_debug();
++#endif
++
++	uninit_configfs_setup();
++}
++
++
++MODULE_LICENSE("GPL");
++module_init(init_agent);
++module_exit(exit_agent);
+diff --git a/security/ikgt/msr.c b/security/ikgt/msr.c
+new file mode 100755
+index 0000000..7b4de24
+--- /dev/null
++++ b/security/ikgt/msr.c
+@@ -0,0 +1,266 @@
++/*
++* This is an example ikgt usage driver.
++* Copyright (c) 2015, Intel Corporation.
++*
++* This program is free software; you can redistribute it and/or modify it
++* under the terms and conditions of the GNU General Public License,
++* version 2, as published by the Free Software Foundation.
++*
++* This program is distributed in the hope it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++* more details.
++*/
++
++#include <linux/module.h>
++
++#include "ikgt_api.h"
++#include "common.h"
++#include "alloc.h"
++
++
++name_value_map msr_regs[] = {
++	{ "EFER",         0xC0000080, RESOURCE_ID_MSR_EFER},
++	{ "STAR",         0xC0000081, RESOURCE_ID_MSR_STAR},
++	{ "LSTAR",        0xC0000082, RESOURCE_ID_MSR_LSTAR},
++	{ "SYSENTER_CS",  0x174,      RESOURCE_ID_MSR_SYSENTER_CS},
++	{ "SYSENTER_ESP", 0x175,      RESOURCE_ID_MSR_SYSENTER_ESP},
++	{ "SYSENTER_EIP", 0x176,      RESOURCE_ID_MSR_SYSENTER_EIP},
++	{ "SYSENTER_PAT", 0x277,      RESOURCE_ID_MSR_SYSENTER_PAT},
++
++	/* Table terminator */
++	{}
++};
++
++static int valid_msr_attr(const char *name)
++{
++	int i;
++
++	for (i = 0; msr_regs[i].name; i++) {
++		if (strcasecmp(msr_regs[i].name, name) == 0) {
++			return i;
++		}
++	}
++
++	return -1;
++}
++
++
++static ssize_t msr_cfg_enable_store(struct config_item *item,
++									const char *page,
++									size_t count);
++
++static ssize_t msr_cfg_write_store(struct config_item *item,
++								   const char *page,
++								   size_t count);
++
++static ssize_t msr_cfg_sticky_value_store(struct config_item *item,
++										  const char *page,
++										  size_t count);
++
++/* to_msr_cfg() function */
++IKGT_CONFIGFS_TO_CONTAINER(msr_cfg);
++
++/* item operations */
++IKGT_UINT32_SHOW(msr_cfg, enable);
++IKGT_UINT32_HEX_SHOW(msr_cfg, write);
++IKGT_ULONG_HEX_SHOW(msr_cfg, sticky_value);
++
++/* attributes */
++IKGT_CONFIGFS_ATTR_RW(msr_cfg, enable);
++IKGT_CONFIGFS_ATTR_RW(msr_cfg, write);
++IKGT_CONFIGFS_ATTR_RW(msr_cfg, sticky_value);
++
++static struct configfs_attribute *msr_cfg_attrs[] = {
++	&msr_cfg_attr_enable,
++	&msr_cfg_attr_write,
++	&msr_cfg_attr_sticky_value,
++	NULL,
++};
++
++
++static bool policy_set_msr(struct msr_cfg *msr_cfg, bool enable)
++{
++	policy_message_t *msg = NULL;
++	policy_update_rec_t *entry = NULL;
++	uint64_t ret;
++	message_id_t msg_id;
++	uint64_t in_offset;
++	int idx = valid_msr_attr(msr_cfg->item.ci_name);
++
++	if (idx < 0)
++		return false;
++
++	msg = (policy_message_t *)allocate_in_buf(sizeof(policy_message_t), &in_offset);
++	if (msg == NULL)
++		return false;
++
++	msg_id = enable?POLICY_ENTRY_ENABLE:POLICY_ENTRY_DISABLE;
++
++	entry = &msg->policy_data[0];
++
++	POLICY_SET_RESOURCE_ID(entry, msr_regs[idx].res_id);
++	POLICY_SET_WRITE_ACTION(entry, msr_cfg->write);
++
++	POLICY_SET_STICKY_VALUE(entry, msr_cfg->sticky_value);
++
++	ret = ikgt_hypercall(msg_id, in_offset, 0);
++	if (SUCCESS != ret) {
++		PRINTK_ERROR("%s: ikgt_hypercall failed, ret=%llu\n", __func__, ret);
++	}
++
++	free_in_buf(in_offset);
++
++	return (ret == SUCCESS)?true:false;
++}
++
++static ssize_t msr_cfg_write_store(struct config_item *item,
++								   const char *page,
++								   size_t count)
++{
++	unsigned long value;
++
++	struct msr_cfg *msr_cfg = to_msr_cfg(item);
++
++	if (msr_cfg->locked)
++		return -EPERM;
++
++	if (kstrtoul(page, 0, &value))
++		return -EINVAL;
++
++	msr_cfg->write = value;
++
++	return count;
++}
++
++static ssize_t msr_cfg_sticky_value_store(struct config_item *item,
++										  const char *page,
++										  size_t count)
++{
++	unsigned long value;
++
++	struct msr_cfg *msr_cfg = to_msr_cfg(item);
++
++	if (msr_cfg->locked)
++		return -EPERM;
++
++	if (kstrtoul(page, 0, &value))
++		return -EINVAL;
++
++	msr_cfg->sticky_value = value;
++
++	return count;
++}
++
++static ssize_t msr_cfg_enable_store(struct config_item *item,
++									const char *page,
++									size_t count)
++{
++	unsigned long value;
++	bool ret = false;
++
++	struct msr_cfg *msr_cfg = to_msr_cfg(item);
++
++	if (kstrtoul(page, 0, &value))
++		return -EINVAL;
++
++	if (msr_cfg->locked) {
++		return -EPERM;
++	}
++
++	ret = policy_set_msr(msr_cfg, value);
++
++	if (ret) {
++		msr_cfg->enable = value;
++	}
++
++	if (ret && (msr_cfg->write & POLICY_ACT_STICKY))
++		msr_cfg->locked = true;
++
++	return count;
++}
++
++
++static void msr_cfg_release(struct config_item *item)
++{
++	kfree(to_msr_cfg(item));
++}
++
++static struct configfs_item_operations msr_cfg_ops = {
++	.release		= msr_cfg_release,
++};
++
++static struct config_item_type msr_cfg_type = {
++	.ct_item_ops	= &msr_cfg_ops,
++	.ct_attrs	= msr_cfg_attrs,
++	.ct_owner	= THIS_MODULE,
++};
++
++
++static struct config_item *msr_make_item(struct config_group *group,
++										 const char *name)
++{
++	struct msr_cfg *msr_cfg;
++
++	if (valid_msr_attr(name) == -1) {
++		PRINTK_ERROR("Invalid MSR bit name\n");
++		return NULL;
++	}
++
++	msr_cfg = kzalloc(sizeof(struct msr_cfg), GFP_KERNEL);
++	if (!msr_cfg) {
++		return ERR_PTR(-ENOMEM);
++	}
++
++	config_item_init_type_name(&msr_cfg->item, name,
++		&msr_cfg_type);
++
++	return &msr_cfg->item;
++}
++
++static ssize_t msr_children_description_show(struct config_item *item,
++									  char *page)
++{
++		return sprintf(page,
++					   "MSR\n"
++					   "\n"
++					   "Used in protected mode to control operations .  \n"
++					   "items are readable and writable.\n");
++}
++
++static struct configfs_attribute msr_children_attr_description = {
++	.ca_owner	= THIS_MODULE,
++	.ca_name	= "description",
++	.ca_mode	= S_IRUGO,
++	.show       = msr_children_description_show
++};
++
++static struct configfs_attribute *msr_children_attrs[] = {
++	&msr_children_attr_description,
++	NULL,
++};
++
++static void msr_children_release(struct config_item *item)
++{
++	kfree(to_node(item));
++}
++
++static struct configfs_item_operations msr_children_item_ops = {
++	.release	= msr_children_release,
++};
++
++static struct configfs_group_operations msr_children_group_ops = {
++	.make_item	= msr_make_item,
++};
++
++static struct config_item_type msr_children_type = {
++	.ct_item_ops	= &msr_children_item_ops,
++	.ct_group_ops	= &msr_children_group_ops,
++	.ct_attrs	= msr_children_attrs,
++	.ct_owner	= THIS_MODULE,
++};
++
++struct config_item_type *get_msr_children_type(void)
++{
++	return &msr_children_type;
++}
+diff --git a/security/ikgt/parse_log.py b/security/ikgt/parse_log.py
+new file mode 100644
+index 0000000..8649ad1
+--- /dev/null
++++ b/security/ikgt/parse_log.py
+@@ -0,0 +1,130 @@
++################################################################################
++# This is an example usage of iKGT.
++# Copyright (c) 2015, Intel Corporation.
++#
++# This program is free software; you can redistribute it and/or modify it
++# under the terms and conditions of the GNU General Public License,
++# version 2, as published by the Free Software Foundation.
++#
++# This program is distributed in the hope it will be useful, but WITHOUT
++# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++# more details.
++################################################################################
++
++import sys
++import subprocess
++import argparse
++import os.path
++import shutil
++
++#Strings from CSV File
++log_val = sys.argv[1]
++kallsyms_val = '/proc/kallsyms'
++modules_val = '/proc/modules'
++kernel_text_low = int('0xffffffff80000000', 16)
++kernel_text_high = int('0xffffffffa0000000', 16)
++kernel_vmalloc_low = int('0xffffc90000000000', 16)
++kernel_vmalloc_high = int('0xffffe8ffffffffff', 16)
++module_low = int('0xffffffffa0000000', 16)
++module_high = int('0xffffffffff5fffff', 16)
++
++with open(log_val, "r") as f1:
++    array1 = []
++    array2 = []
++    log_array = []
++    i1 = 0
++    i2 = 0
++    for line1 in f1:
++	if 'EOF' not in line1:
++		array1.append(line1)
++		D1 = dict(item.split("=") for item in array1[i1].split(", "))
++		D1 = {key.strip(): value.strip() for key, value in D1.items()}
++		#print D1 
++		if len(D1) == 7:
++			rip = int(D1['RIP'], 16)
++			location = 'Unknown'
++			name = 'Unknown'
++			if (rip >= kernel_vmalloc_low and rip <= kernel_vmalloc_high):
++				location = 'kernel_vmalloc'
++				#print location
++				array1[i1] = array1[i1].rstrip('\n')
++				output = array1[i1] + ', caller_type=' + location
++			elif (rip >= kernel_text_low and rip <= kernel_text_high):
++				location = 'kernel_text'
++				#print location
++				with open(kallsyms_val, "r") as f2:
++					array2 = []
++					i2 = 0
++					fg = 0
++                                        for line2 in f2:
++                                                array2.append(line2)
++                                                L2 = array2[i2].split(" ")
++						L2 = [item.rstrip('\n') for item in L2]
++						if ((L2[1] == 't' or L2[1] == 'T') and rip <= int(L2[0], 16)):
++							if rip == int(L2[0], 16):
++								name = L2[2]
++								fg = 1
++								break
++							try:
++								tempL2 = array2[i2-1].split(" ")
++								tempL2 = [item.rstrip('\n') for item in tempL2]
++								if ((tempL2[1] == 't' or tempL2[1] == 'T') and rip >= int(tempL2[0], 16)):
++									name = tempL2[2]
++									fg = 1
++							except IOError as e:
++								print 'Cannot find an entry in ' + kallsyms_val + '.'
++							break
++                                                #print L2[1]
++                                                i2 += 1
++					tempL2 = array2[i2-1].split(" ")
++                                        tempL2 = [item.rstrip('\n') for item in tempL2]
++					if (fg==0 and ((tempL2[1] == 't' or tempL2[1] == 'T') and rip >= int(tempL2[0], 16))):
++                                                name = tempL2[2]
++				array1[i1] = array1[i1].rstrip('\n')
++				output = array1[i1] + ', caller_type=' + location + ', function-name=' + name
++			elif (rip >= module_low and rip <= module_high):
++				location = 'module'
++				#print location
++				with open(modules_val, "r") as f2:
++                                        array2 = []
++					arrayL2 = []
++                                        i2 = 0
++                                        for line2 in f2:
++                                                array2.append(line2)
++                                                L2 = array2[i2].split(" ")
++                                                L2 = [item.rstrip('\n') for item in L2]
++						arrayL2.append(L2)
++						i2 += 1
++					arrayL2.sort(key=lambda x: int(x[5], 16))
++					#print arrayL2
++					i2 = 0
++					fg = 0;
++					for L2 in arrayL2:
++                                                if (rip <= int(L2[5], 16)):
++                                                        if rip == int(L2[5], 16):
++                                                                name = L2[0]
++								fg = 1
++                                                                break
++                                                        try:
++                                                                tempL2 = arrayL2[i2-1]
++                                                                if (rip >= int(tempL2[5], 16)):
++                                                                        name = tempL2[0]
++									fg = 1
++                                                        except IOError as e:
++                                                                print 'Cannot find an entry in ' + modules_val + '.'
++                                                        break
++                                                #print L2[1]
++                                                i2 += 1
++					if (fg==0 and rip >= int(arrayL2[i2-1][5], 16)):
++						name = arrayL2[i2-1][0]
++				array1[i1] = array1[i1].rstrip('\n')
++				output = array1[i1] + ', caller_type=' + location + ', module-name=' + name
++			else:
++				print 'Rest of the kernel'
++		else:
++			array1[i1] = array1[i1].rstrip('\n')
++			output = array1[i1]
++                print output
++		i1 += 1
++
+diff --git a/security/ikgt/policy_common.h b/security/ikgt/policy_common.h
+new file mode 100755
+index 0000000..692b91c
+--- /dev/null
++++ b/security/ikgt/policy_common.h
+@@ -0,0 +1,256 @@
++/*******************************************************************************
++* Copyright (c) 2015 Intel Corporation
++*
++* Licensed under the Apache License, Version 2.0 (the "License");
++* you may not use this file except in compliance with the License.
++* You may obtain a copy of the License at
++*
++*      http://www.apache.org/licenses/LICENSE-2.0
++*
++* Unless required by applicable law or agreed to in writing, software
++* distributed under the License is distributed on an "AS IS" BASIS,
++* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++* See the License for the specific language governing permissions and
++* limitations under the License.
++*******************************************************************************/
++
++#ifndef _POLICY_COMMON_H
++#define _POLICY_COMMON_H
++
++#include "common_types.h"
++
++
++typedef enum {
++	POLICY_GET_CONFIG = 0,
++	POLICY_ENTRY_ENABLE,
++	POLICY_ENTRY_DISABLE,
++	POLICY_MAKE_IMMUTABLE,
++	POLICY_GET_TEST,
++	POLICY_DEBUG
++} message_id_t;
++
++typedef enum {
++	SUCCESS = 0,
++	ERROR,
++	IKGT_NOT_RUNNING,
++} ikgt_result_t;
++
++#define PERMISSION_READ  0x1
++
++#define PERMISSION_WRITE  0x2
++
++#define PERMISSION_EXECUTE  0x4
++
++#define PERMISSION_READ_EXECUTE (PERMISSION_READ | PERMISSION_EXECUTE)
++
++#define PERMISSION_READ_WRITE (PERMISSION_READ | PERMISSION_WRITE)
++
++#define PERMISSION_RWX (PERMISSION_READ | PERMISSION_WRITE | PERMISSION_EXECUTE)
++
++/* CR0 constants */
++#define PE BIT(0)
++#define MP BIT(1)
++#define EM BIT(2)
++#define TS BIT(3)
++#define ET BIT(4)
++#define NE BIT(5)
++#define WP BIT(16)
++#define AM BIT(18)
++#define NW BIT(29)
++#define CD BIT(30)
++#define PG BIT(31)
++
++/* CR4 constants */
++#define VME BIT(0)
++#define PVI BIT(1)
++#define TSD BIT(2)
++#define DE  BIT(3)
++#define PSE BIT(4)
++#define PAE BIT(5)
++#define MCE BIT(6)
++#define PGE BIT(7)
++#define PCE BIT(8)
++#define OSFXSR BIT(9)
++#define OSXMMEXCPT BIT(10)
++#define VMXE BIT(13)
++#define SMXE BIT(14)
++#define PCIDE BIT(17)
++#define OSXSAVE BIT(18)
++#define SMEP BIT(20)
++#define SMAP BIT(21)
++
++#define POLICY_ACT_LOG     BIT(0)
++#define POLICY_ACT_SKIP    BIT(1)
++#define POLICY_ACT_ALLOW   0
++#define POLICY_ACT_STICKY  BIT(7)
++#define LOG_MESSAGE_SIZE   120
++
++#define POLICY_ACT_LOG_ALLOW   (POLICY_ACT_LOG | POLICY_ACT_ALLOW)
++#define POLICY_ACT_LOG_SKIP    (POLICY_ACT_LOG | POLICY_ACT_SKIP)
++#define POLICY_ACT_LOG_STICKY  (POLICY_ACT_LOG | POLICY_ACT_STICKY)
++
++typedef enum _RESOURCE_ID {
++	RESOURCE_ID_START = 1,
++
++	RESOURCE_ID_CR0_PE = RESOURCE_ID_START,
++	RESOURCE_ID_CR0_MP,
++	RESOURCE_ID_CR0_EM,
++	RESOURCE_ID_CR0_TS,
++	RESOURCE_ID_CR0_ET,
++	RESOURCE_ID_CR0_NE,
++	RESOURCE_ID_CR0_WP,
++	RESOURCE_ID_CR0_AM,
++	RESOURCE_ID_CR0_NW,
++	RESOURCE_ID_CR0_CD,
++	RESOURCE_ID_CR0_PG,
++
++	RESOURCE_ID_CR4_VME,
++	RESOURCE_ID_CR4_PVI,
++	RESOURCE_ID_CR4_TSD,
++	RESOURCE_ID_CR4_DE,
++	RESOURCE_ID_CR4_PSE,
++	RESOURCE_ID_CR4_PAE,
++	RESOURCE_ID_CR4_MCE,
++	RESOURCE_ID_CR4_PGE,
++	RESOURCE_ID_CR4_PCE,
++	RESOURCE_ID_CR4_OSFXSR,
++	RESOURCE_ID_CR4_OSXMMEXCPT,
++	RESOURCE_ID_CR4_VMXE,
++	RESOURCE_ID_CR4_SMXE,
++	RESOURCE_ID_CR4_PCIDE,
++	RESOURCE_ID_CR4_OSXSAVE,
++	RESOURCE_ID_CR4_SMEP,
++	RESOURCE_ID_CR4_SMAP,
++
++	RESOURCE_ID_MSR_EFER,
++	RESOURCE_ID_MSR_STAR,
++	RESOURCE_ID_MSR_LSTAR,
++	RESOURCE_ID_MSR_SYSENTER_CS,
++	RESOURCE_ID_MSR_SYSENTER_ESP,
++	RESOURCE_ID_MSR_SYSENTER_EIP,
++	RESOURCE_ID_MSR_SYSENTER_PAT,
++
++
++	RESOURCE_ID_END,
++	RESOURCE_ID_UNKNOWN
++} RESOURCE_ID;
++
++typedef enum {
++	POLICY_INFO_IDX_MASK = 0,
++	POLICY_INFO_IDX_CPU_MASK_1,
++	POLICY_INFO_IDX_CPU_MASK_2,
++
++	POLICY_INFO_IDX_MAX /* last */
++} POLICY_RESOUCE_INFO_IDX;
++
++#define POLICY_GET_RESOURCE_ID(e) ((e)->resource_id)
++#define POLICY_GET_READ_ACTION(e) ((e)->r_action)
++#define POLICY_GET_WRITE_ACTION(e) ((e)->w_action)
++#define POLICY_GET_EXEC_ACTION(e) ((e)->x_action)
++#define POLICY_GET_STICKY_VALUE(e) ((e)->sticky_val)
++
++#define POLICY_SET_RESOURCE_ID(e, val) ((e)->resource_id = val)
++#define POLICY_SET_READ_ACTION(e, val) ((e)->r_action = val)
++#define POLICY_SET_WRITE_ACTION(e, val) ((e)->w_action = val)
++#define POLICY_SET_EXEC_ACTION(e, val) ((e)->x_action = val)
++#define POLICY_SET_STICKY_VALUE(e, val) ((e)->sticky_val = val)
++
++#define POLICY_INFO_SET_MASK(e, val) ((e)->resource_info[POLICY_INFO_IDX_MASK] = val)
++#define POLICY_INFO_SET_CPU_MASK_1(e, val) ((e)->resource_info[POLICY_INFO_IDX_CPU_MASK_1] = val)
++#define POLICY_INFO_SET_CPU_MASK_2(e, val) ((e)->resource_info[POLICY_INFO_IDX_CPU_MASK_2] = val)
++
++#define POLICY_INFO_GET_MASK(e) ((e)->resource_info[POLICY_INFO_IDX_MASK])
++#define POLICY_INFO_GET_CPU_MASK_1(e) ((e)->resource_info[POLICY_INFO_IDX_CPU_MASK_1])
++#define POLICY_INFO_GET_CPU_MASK_2(e) ((e)->resource_info[POLICY_INFO_IDX_CPU_MASK_2])
++
++typedef union {
++	struct {
++		uint32_t	revision_number:32;
++		uint32_t	patch:8;
++		uint32_t	release_candidate:8;
++		uint32_t	release_status:4;
++		uint32_t	minor_version:6;
++		uint32_t	major_version:6;
++	} bits;
++	uint64_t uint64;
++} version_info_t;
++
++typedef struct {
++	version_info_t       ver;
++	uint64_t             in_pa;
++	uint64_t             in_size;
++	uint64_t             out_pa;
++	uint64_t             out_size;
++	uint64_t             log_pa;
++	uint64_t             log_size;
++} config_info_t;
++
++typedef struct {
++	uint32_t	resource_id;
++	uint32_t	r_action;
++	uint32_t	w_action;
++	uint32_t	x_action;
++	uint64_t	sticky_val;
++	uint64_t	resource_info[POLICY_INFO_IDX_MAX];
++} policy_update_rec_t;
++
++typedef struct {
++	char *log_addr;
++	uint32_t log_size;
++} log_message_t;
++
++typedef struct {
++	char *report_addr;
++	uint32_t report_size;
++} report_message_t;
++
++typedef struct {
++	uint64_t parameter;
++} debug_message_t;
++
++typedef struct {
++	uint32_t	count;
++	uint32_t	padding;
++	union {
++		policy_update_rec_t policy_data[1];
++		log_message_t    log_param;
++		report_message_t report_param;
++		debug_message_t  debug_param;
++	};
++} policy_message_t;
++
++typedef struct {
++	uint64_t seq_num; /* sequence number of this record */
++	char message[LOG_MESSAGE_SIZE];
++} log_entry_t;
++
++
++/* each page is 4K size */
++#ifndef PAGE_4KB
++#define PAGE_4KB 4096
++#endif
++
++#define PAGES_TO_BYTES(n) ((n) * PAGE_4KB)
++
++#define MAX_CONFIG_INFO_PAGES 1
++#define MAX_IN_ADDR_PAGES     1
++#define MAX_OUT_ADDR_PAGES    1
++
++/* two 4K-pages for log data per cpu */
++#define LOG_PAGES_PER_CPU  2
++
++/* # of entries per cpu: */
++#define ENTRIES_PER_CPU ((LOG_PAGES_PER_CPU * PAGE_4KB) / sizeof(log_entry_t))
++
++/* excluding the first entry (#0), as it is used as meta data instead */
++#define LOGS_PER_CPU (ENTRIES_PER_CPU)
++
++#define LOG_SEQ_NUM_TO_INDEX(seq)  (((seq) % LOGS_PER_CPU) - 1)
++
++static inline log_entry_t *get_cpu_log_buffer_start(log_entry_t *log_buffer_base,
++													uint32_t cpu_index)
++{
++	return &(log_buffer_base[cpu_index * ENTRIES_PER_CPU]);
++}
++
++#endif /* _POLICY_COMMON_H */

@@ -17,7 +17,8 @@ IUSE=""
 S="${WORKDIR}"
 
 src_prepare() {
-			  sed -i '/$(MAKE) -C $(PWD)\/driver/d' example-usage/integrity/Makefile
+			  sed -i '/$(MAKE) -C $(PWD)\/driver/d' example-usage/integrity/Makefile \
+			    || die "sed fix didn't work...Uh oh!"
 			  eapply_user
 }
 
@@ -27,6 +28,7 @@ src_compile() {
 }
 
 src_install() {
+			  # Copy the ikgt binary to /usr/boot
 			  insinto /usr/boot
 			  doins xmon/bin/linux/release/ikgt_pkg.bin
 }
